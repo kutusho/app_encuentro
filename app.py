@@ -233,12 +233,10 @@ with tabs[2]:
         st.success(f"Base URL actualizada a: {st.session_state['base_url']}")
     st.caption("Sugerido: tu dominio de Streamlit Cloud de esta app.")
 
-# --------------------------
-# STAFF (lector + fallback por foto)
-# --------------------------
+# ---- Staff — Lector continuo (llaves escapadas) ----
 with tabs[3]:
     st.subheader("Modo Staff — Escaneo con cámara")
-    st.caption("Si el lector no abre en iPhone, usa el **modo por foto** de abajo. En Android/PC el lector continuo funciona bien.")
+    st.caption("Si el lector no abre en iPhone, usa el modo por foto de abajo. En Android/PC el lector continuo funciona bien.")
 
     sede_staff_live = st.selectbox(
         "Sede por defecto si el QR trae solo token (sin URL):",
@@ -249,7 +247,6 @@ with tabs[3]:
     sede_val_live = sede_staff_live.replace('"', '\\"')
     base_url_live = st.session_state.get("base_url", DEFAULT_BASE_URL)
 
-    # Lector continuo: carga robusta de html5-qrcode + arranque con botón (iOS)
     scanner_html = f"""
     <div style="display:flex;gap:16px;flex-wrap:wrap;align-items:flex-start">
       <div style="max-width:380px;">
@@ -269,7 +266,7 @@ with tabs[3]:
     </div>
 
     <script>
-      // Cargar librería desde CDNJS (iOS-friendly) y habilitar botón cuando esté lista
+      // Cargar librería desde CDNJS y habilitar botón cuando esté lista
       (function loadLib(){{
         var s = document.createElement('script');
         s.src = "https://cdnjs.cloudflare.com/ajax/libs/html5-qrcode/2.3.10/html5-qrcode.min.js";
@@ -381,64 +378,7 @@ with tabs[3]:
     """
     components.html(scanner_html, height=700, scrolling=False, key="scanner_live")
 
-    st.divider()
-    st.markdown("### 🔍 Diagnóstico rápido (preview sin escanear)")
-    diag_html = """
-    <video id="videoTest" autoplay playsinline style="width:100%;max-width:360px;border-radius:8px;background:#000"></video>
-    <div id="diagMsg" style="font-size:14px;color:#6b7280;margin-top:6px"></div>
-    <script>
-      const msg = document.getElementById('diagMsg');
-      navigator.mediaDevices.getUserMedia({ video: { facingMode: { ideal: "environment" } } })
-      .then(stream => { document.getElementById('videoTest').srcObject = stream; msg.innerText = "Preview activo"; })
-      .catch(e => { msg.innerText = "❌ " + e.message; });
-    </script>
-    """
-    components.html(diag_html, height=420, key="diag_preview")
-
-    st.divider()
-    st.subheader("Modo Staff — Escaneo por foto (compatibilidad iPhone)")
-    st.caption("Toma una foto del QR. Decodificamos en el navegador y te enviamos a la verificación.")
-    sede_staff_photo = st.selectbox(
-        "Sede por defecto si el QR trae solo token (sin URL):",
-        ["Holiday Inn Tuxtla (Día 1)", "Ex Convento Santo Domingo (Día 2)", "Museo de los Altos (Día 3)"],
-        index=0,
-        key="sede_staff_photo"
-    )
-    sede_val_photo = sede_staff_photo.replace('"', '\\"')
-    base_url_photo = st.session_state.get("base_url", DEFAULT_BASE_URL)
-
-    html_photo = f"""
-    <input id="qrFile" type="file" accept="image/*" capture="environment"
-           style="padding:12px;border:1px solid #e5e7eb;border-radius:12px;width:100%;max-width:420px">
-    <div id="photoResult" style="margin-top:10px;font-family:system-ui,-apple-system,Segoe UI,Roboto,Ubuntu,Cantarell,Noto Sans,Helvetica,Arial;"></div>
-    <canvas id="qrCanvas" style="display:none"></canvas>
-    <script src="https://cdn.jsdelivr.net/npm/jsqr@1.4.0/dist/jsQR.js"></script>
-    <script>
-      const baseUrlP = "{base_url_photo}";
-      const sedeDefP = "{sede_val_photo}";
-      function toUrl(t){{ return /^https?:\\/\\//i.test(t) ? t : baseUrlP + "/?token=" + encodeURIComponent(t) + "&sede=" + encodeURIComponent(sedeDefP); }}
-      document.getElementById("qrFile").addEventListener("change", (ev) => {{
-        const f = ev.target.files && ev.target.files[0]; if (!f) return;
-        const img = new Image(); const url = URL.createObjectURL(f);
-        img.onload = () => {{
-          const c = document.getElementById("qrCanvas"), x = c.getContext("2d");
-          c.width = img.naturalWidth; c.height = img.naturalHeight; x.drawImage(img,0,0);
-          const d = x.getImageData(0,0,c.width,c.height);
-          const code = jsQR(d.data, c.width, c.height, {{ inversionAttempts: "attemptBoth" }});
-          if (code && code.data) {{
-            document.getElementById("photoResult").innerHTML = "✅ QR leído. Abriendo…";
-            window.location.href = toUrl(code.data);
-          }} else {{
-            document.getElementById("photoResult").innerText = "❌ No se detectó un QR claro. Intenta acercar y enfocar.";
-          }}
-          URL.revokeObjectURL(url);
-        }};
-        img.onerror = () => {{ document.getElementById("photoResult").innerText = "❌ No se pudo cargar la imagen."; URL.revokeObjectURL(url); }};
-        img.src = url;
-      }});
-    </script>
-    """
-    components.html(html_photo, height=180, scrolling=False, key="scanner_photo")
+    # (Debajo deja tu Diagnóstico y el Modo por foto tal como los tienes, con keys únicos)
 
 # ==========================
 # FIN
