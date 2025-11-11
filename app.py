@@ -1,391 +1,352 @@
 # app.py
+# Primer Encuentro Internacional de Guías de Turistas en Chiapas
+# Colegio de Guías de Turistas de Chiapas, A.C.
+
 import os
 import io
-import uuid
 import time
-import qrcode
+import base64
+from datetime import datetime
 import pandas as pd
 import streamlit as st
 import streamlit.components.v1 as components
-from datetime import datetime
-from google.oauth2.service_account import Credentials
+import qrcode
+from PIL import Image
 import gspread
+from google.oauth2.service_account import Credentials
 
 # ==========================
-# CONFIGURACIÓN BÁSICA
+# CONFIGURACIÓN DE LA APP
 # ==========================
 st.set_page_config(
-    page_title="Primer Encuentro Internacional de Guías de Turistas en Chiapas",
+    page_title="Encuentro de Guías en Chiapas • Registro",
     page_icon="✅",
-    layout="wide",
+    layout="centered"
 )
 
-DEFAULT_BASE_URL = st.secrets.get("base_url", "https://encuentro.streamlit.app")
+PRIMARY = "#0b6e99"      # azul colegiado
+SUCCESS = "#21a67a"
+DANGER  = "#cc3d3d"
+MUTED   = "#6b7280"
 
-LOGO_PATH = "assets/logo_colegio.png"
-HERO_PATH = "assets/hero.png"
+LOGO_PATH = "assets/logo_colegio.png"  # ajusta si tu archivo tiene otro nombre
+EVENT_TAGLINE = "Saberes que unen, culturas que inspiran. • Colegio de Guías de Turistas de Chiapas A.C."
 
-PRIMARY_COLOR = "#0b5f8a"   # azul institucional
-ACCENT_COLOR  = "#2fa24b"   # verde institucional
+SEDES = [
+    "Holiday Inn Tuxtla (Día 1)",
+    "Ex Convento Santo Domingo (Día 2)",
+    "Museo de los Altos (Día 3)",
+]
+
+# ==========================
+# CONEXIÓN GOOGLE SHEETS
+# ==========================
+def get_gspread_client():
+    creds_dict = st.secrets["gcp_service_account"]
+    scopes = ["https://www.googleapis.com/auth/spreadsheets", "https://www.googleapis.com/auth/drive"]
+    creds = Credentials.from_service_account_info(creds_dict, scopes=scopes)
+    return gspread.authorize(creds)
+
+def open_worksheet():
+    gc = get_gspread_client()
+    sh = gc.open_by_key(st.secrets["gsheet_id"])
+    # Hoja principal de asistentes
+    try:
+        ws = sh.worksheet("asistentes")
+    except gspread.WorksheetNotFound:
+        ws = sh.add_worksheet(title="asistentes", rows=2000, cols=20)
+        ws.update("A1:H1", [["timestamp","nombre","inst","email","telefono","cuota","sede_defecto","token"]])
+    # Hoja de checkins
+    try:
+        chk = sh.worksheet("checkins")
+    except gspread.WorksheetNotFound:
+        chk = sh.add_worksheet(title="checkins", rows=5000, cols=20)
+        chk.update("A1:E1", [["timestamp","token","sede","ok","detalle"]])
+    return ws, chk
+
+def find_row_by_token(ws, token):
+    if not token:
+        return None
+    try:
+        cells = ws.findall(token)
+        for c in cells:
+            # token está en la columna H según encabezado anterior
+            if c.col == 8:
+                return c.row
+    except gspread.exceptions.APIError:
+        pass
+    return None
+
+def append_checkin(chk_ws, token, sede, ok, detalle=""):
+    ts = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    chk_ws.append_row([ts, token, sede, "TRUE" if ok else "FALSE", detalle], value_input_option="USER_ENTERED")
 
 # ==========================
 # UTILIDADES
 # ==========================
-@st.cache_resource(show_spinner=False)
-def get_gspread_client():
-    sa = st.secrets["gcp_service_account"]
-    scopes = [
-        "https://www.googleapis.com/auth/spreadsheets",
-        "https://www.googleapis.com/auth/drive",
-    ]
-    creds = Credentials.from_service_account_info(sa, scopes=scopes)
-    return gspread.authorize(creds)
+def make_qr(url: str, box=10):
+    qr = qrcode.QRCode(box_size=box, border=2)
+    qr.add_data(url)
+    qr.make(fit=True)
+    img = qr.make_image(fill_color="black", back_color="white")
+    return img
 
-@st.cache_resource(show_spinner=False)
-def get_worksheets():
-    gc = get_gspread_client()
-    ss_id = st.secrets["sheets"]["spreadsheet_id"]
-    ws_att = st.secrets["sheets"]["attendees_ws"]
-    ws_chk = st.secrets["sheets"]["checkins_ws"]
-    ss = gc.open_by_key(ss_id)
-    w_att = ss.worksheet(ws_att)
-    w_chk = ss.worksheet(ws_chk)
-    # Garantizar encabezados
-    ensure_headers(w_att, ["timestamp","nombre","institucion","cuota","email","telefono","token","sede_default"])
-    ensure_headers(w_chk, ["timestamp","token","sede","origen"])
-    return w_att, w_chk
-
-def ensure_headers(ws, headers):
-    cur = ws.row_values(1)
-    if [h.lower() for h in cur] != [h.lower() for h in headers]:
-        ws.clear()
-        ws.append_row(headers)
-
-def df_attendees():
-    w_att, _ = get_worksheets()
-    vals = w_att.get_all_values()
-    if not vals: return pd.DataFrame(columns=["timestamp","nombre","institucion","cuota","email","telefono","token","sede_default"])
-    df = pd.DataFrame(vals[1:], columns=vals[0])
-    return df
-
-def df_checkins():
-    _, w_chk = get_worksheets()
-    vals = w_chk.get_all_values()
-    if not vals: return pd.DataFrame(columns=["timestamp","token","sede","origen"])
-    df = pd.DataFrame(vals[1:], columns=vals[0])
-    return df
-
-def add_attendee(nombre, institucion, cuota, email, telefono, sede_default):
-    token = str(uuid.uuid4())
-    w_att, _ = get_worksheets()
-    w_att.append_row([
-        datetime.now().isoformat(timespec="seconds"),
-        nombre, institucion, cuota, email, telefono, token, sede_default
-    ])
-    return token
-
-def record_checkin(token, sede, origen="url"):
-    _, w_chk = get_worksheets()
-    w_chk.append_row([datetime.now().isoformat(timespec="seconds"), token, sede, origen])
-
-def attendee_by_token(token):
-    df = df_attendees()
-    if df.empty: return None
-    hit = df[df["token"] == token]
-    if hit.empty: return None
-    return hit.iloc[0].to_dict()
-
-def has_checkin(token):
-    d = df_checkins()
-    if d.empty: return False
-    return any(d["token"] == token)
-
-def build_verify_url(token, sede):
-    base = st.session_state.get("base_url", DEFAULT_BASE_URL)
-    return f"{base}/?token={token}&sede={sede}"
-
-def qr_img_bytes(url: str) -> bytes:
-    img = qrcode.make(url)
+def img_to_html(img: Image.Image, width=220):
     buf = io.BytesIO()
     img.save(buf, format="PNG")
-    return buf.getvalue()
+    b64 = base64.b64encode(buf.getvalue()).decode()
+    return f'<img src="data:image/png;base64,{b64}" width="{width}" />'
 
-def big_result_box(txt: str, color: str):
+def success_badge(text: str):
     st.markdown(
         f"""
-        <div style="
-            border-radius:16px;padding:24px;
-            background:{color};color:white;
-            font-size:22px;font-weight:800;text-align:center;">
-            {txt}
+        <div style="padding:14px;border-radius:12px;background:{SUCCESS}20;border:1px solid {SUCCESS}40;">
+            <span style="color:{SUCCESS};font-weight:700;">{text}</span>
+        </div>
+        """,
+        unsafe_allow_html=True
+    )
+
+def error_badge(text: str):
+    st.markdown(
+        f"""
+        <div style="padding:14px;border-radius:12px;background:{DANGER}10;border:1px solid {DANGER}30;">
+            <span style="color:{DANGER};font-weight:700;">{text}</span>
         </div>
         """,
         unsafe_allow_html=True
     )
 
 # ==========================
-# ENCABEZADO
+# HEADER
 # ==========================
-col_logo, col_title = st.columns([1,3], gap="large")
+col_logo, col_t = st.columns([1, 3], vertical_alignment="center")
 with col_logo:
     if os.path.exists(LOGO_PATH):
-        st.image(LOGO_PATH, width=140)
-with col_title:
-    st.title("Primer Encuentro Internacional de Guías de Turistas en Chiapas")
-    st.subheader("14–16 de noviembre de 2025")
-    st.caption("Saberes que unen, culturas que inspiran. • Colegio de Guías de Turistas de Chiapas A.C.")
+        st.image(LOGO_PATH, width=120)
+with col_t:
+    st.markdown(
+        f"""
+        <h1 style="margin-bottom:0">Primer Encuentro Internacional de<br>Guías de Turistas en Chiapas</h1>
+        <p style="color:{MUTED};margin-top:6px;">14–16 de noviembre de 2025</p>
+        <p style="color:{MUTED};margin-top:-10px;">{EVENT_TAGLINE}</p>
+        """,
+        unsafe_allow_html=True
+    )
 
 # ==========================
-# VERIFICACIÓN POR URL (modo pantalla grande para el staff)
+# LECTURA DE URL (?token=&sede=)
 # ==========================
-qp = st.experimental_get_query_params()
 qp = st.query_params
-token = (qp.get("token") or "").strip()
-sede  = (qp.get("sede")  or "Sede general").strip()
-if token:
-    # … (deja igual el resto de la lógica de verificación)
-
-    st.markdown("---")
-    st.header("Verificación de acceso")
-    att = attendee_by_token(token)
-    if not att:
-        big_result_box("❌ QR inválido / token no encontrado", "#b91c1c")
-        st.stop()
-
-    if has_checkin(token):
-        big_result_box("🟡 Ya registrado anteriormente", "#d97706")
-        st.write(f"**Nombre:** {att['nombre']}")
-        st.write(f"**Cuota:** {att['cuota']}")
-        st.stop()
-
-    # marcar check-in
-    record_checkin(token, sede, origen="url")
-    big_result_box("🟢 Acceso verificado", "#15803d")
-    st.write(f"**Nombre:** {att['nombre']}")
-    st.write(f"**Cuota:** {att['cuota']}")
-    st.stop()
+incoming_token = (qp.get("token") or "").strip()
+incoming_sede  = (qp.get("sede")  or "").strip()
 
 # ==========================
 # TABS
 # ==========================
-tabs = st.tabs(["📝 Registro", "📊 Reportes", "⚙️ Ajustes", "🛡️ Staff"])
+tab_reg, tab_rep, tab_cfg, tab_staff = st.tabs(["✍️ Registro", "📊 Reportes", "⚙️ Ajustes", "🛡️ Staff"])
 
 # --------------------------
 # REGISTRO
 # --------------------------
-with tabs[0]:
+with tab_reg:
+    ws, chk = open_worksheet()
+
     st.subheader("Registrar nuevo asistente")
-    st.info(f"Base URL actual para generar QR: {st.session_state.get('base_url', DEFAULT_BASE_URL)}")
+    base_url = st.text_input(
+        "Base URL actual para generar QR (para staff, escaneo con URL completa):",
+        value="https://encuentro.streamlit.app",
+        key="base_url_reg",
+        help="Usa el dominio público de tu app (https)."
+    )
 
-    c1, c2 = st.columns(2)
-    with c1:
-        nombre = st.text_input("Nombre completo *", key="reg_nombre")
-        instit = st.text_input("Institución / Empresa", key="reg_inst")
-        cuota  = st.selectbox("Tipo de cuota", ["Guía Chiapas", "Público general", "Estudiante"], key="reg_cuota")
-    with c2:
-        email = st.text_input("Email", key="reg_email")
-        tel   = st.text_input("Teléfono", key="reg_tel")
+    col1, col2 = st.columns(2)
+    with col1:
+        nombre = st.text_input("Nombre completo *")
+        inst   = st.text_input("Institución / Empresa")
+        cuota  = st.selectbox("Tipo de cuota", ["Guía Chiapas","Guía (otro estado)","Público general","Estudiante"], key="cuota_reg")
+    with col2:
+        email = st.text_input("Email")
+        tel   = st.text_input("Teléfono")
+        sede_def = st.selectbox("Sede por defecto para el check-in vía URL", SEDES, key="sede_def_reg")
 
-    sede_default = st.selectbox("Sede por defecto para el check-in vía URL",
-                                ["Holiday Inn Tuxtla (Día 1)",
-                                 "Ex Convento Santo Domingo (Día 2)",
-                                 "Museo de los Altos (Día 3)"],
-                                 key="reg_sede_def")
-
-    if st.button("Registrar", type="primary", key="btn_registrar"):
+    if st.button("Registrar", type="primary"):
         if not nombre.strip():
-            st.warning("El nombre es obligatorio.")
+            error_badge("Nombre es obligatorio.")
         else:
-            token = add_attendee(nombre.strip(), instit.strip(), cuota, email.strip(), tel.strip(), sede_default)
-            url = build_verify_url(token, sede_default)
-            st.success("¡Registro guardado!")
-            st.write("URL de verificación / QR:")
-            st.code(url, language="text")
-            st.download_button("Descargar QR", qr_img_bytes(url), file_name=f"qr_{nombre}.png", mime="image/png")
+            # genera token único
+            token = base64.urlsafe_b64encode(os.urandom(6)).decode().strip("=")
+            ts = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+            ws.append_row([ts, nombre, inst, email, tel, cuota, sede_def, token], value_input_option="USER_ENTERED")
 
-    st.divider()
-    st.subheader("Listado (vista rápida)")
-    df = df_attendees()
-    st.dataframe(df, use_container_width=True, height=320)
+            # genera liga y QR
+            vurl = f"{base_url}?token={token}&sede={sede_def}"
+            img = make_qr(vurl, box=9)
+
+            success_badge("Asistente registrado y QR generado.")
+            c1, c2 = st.columns([1,2])
+            with c1:
+                st.markdown(img_to_html(img, 200), unsafe_allow_html=True)
+            with c2:
+                st.code(vurl, language="text")
 
 # --------------------------
 # REPORTES
 # --------------------------
-with tabs[1]:
-    st.subheader("Reportes")
-    dfa = df_attendees()
-    dfc = df_checkins()
+with tab_rep:
+    ws, chk = open_worksheet()
+    st.subheader("Asistentes")
+    data = ws.get_all_records()
+    df = pd.DataFrame(data)
+    if not df.empty:
+        st.dataframe(df, use_container_width=True, height=360)
+    else:
+        st.info("Aún no hay registros.")
 
-    colA, colB, colC = st.columns(3)
-    colA.metric("Asistentes registrados", len(dfa))
-    colB.metric("Check-ins realizados", len(dfc))
-    pct = 0 if len(dfa)==0 else round(100*len(dfc)/len(dfa),1)
-    colC.metric("% Asistencia", f"{pct}%")
-
-    st.markdown("#### Detalle de check-ins")
-    st.dataframe(dfc.sort_values("timestamp", ascending=False), use_container_width=True, height=320)
+    st.subheader("Check-ins")
+    d2 = chk.get_all_records()
+    df2 = pd.DataFrame(d2)
+    if not df2.empty:
+        st.dataframe(df2, use_container_width=True, height=360)
+    else:
+        st.info("Aún no hay check-ins.")
 
 # --------------------------
 # AJUSTES
 # --------------------------
-with tabs[2]:
-    st.subheader("Ajustes")
-    base = st.text_input("Base URL del sistema (para generar/verificar QR)", value=st.session_state.get("base_url", DEFAULT_BASE_URL), key="base_url_input")
-    if st.button("Guardar Base URL", key="btn_save_base"):
-        st.session_state["base_url"] = base.strip() or DEFAULT_BASE_URL
-        st.success(f"Base URL actualizada a: {st.session_state['base_url']}")
-    st.caption("Sugerido: tu dominio de Streamlit Cloud de esta app.")
+with tab_cfg:
+    st.subheader("Ajustes rápidos")
+    st.markdown("- Verifica que **Secrets** tenga `gcp_service_account` y `gsheet_id`.\n- Usa HTTPS para cámara en móviles.\n- Si iPhone no muestra permiso: Safari → aA → Website Settings → **Camera: Allow**.")
 
-# ---- Staff — Lector continuo (llaves escapadas) ----
-with tabs[3]:
+# --------------------------
+# STAFF
+# --------------------------
+with tab_staff:
+    ws, chk = open_worksheet()
+
     st.subheader("Modo Staff — Escaneo con cámara")
-    st.caption("Si el lector no abre en iPhone, usa el modo por foto de abajo. En Android/PC el lector continuo funciona bien.")
+    st.caption("En iOS/Safari: toca el ícono **aA → Website Settings → Camera: Allow** si no aparece el permiso.")
 
-    sede_staff_live = st.selectbox(
+    sede_staff = st.selectbox(
         "Sede por defecto si el QR trae solo token (sin URL):",
-        ["Holiday Inn Tuxtla (Día 1)", "Ex Convento Santo Domingo (Día 2)", "Museo de los Altos (Día 3)"],
-        index=0,
-        key="sede_staff_live"
+        SEDES, index=0, key="sede_staff_select"
     )
-    sede_val_live = sede_staff_live.replace('"', '\\"')
-    base_url_live = st.session_state.get("base_url", DEFAULT_BASE_URL)
+
+    # ---------- 1) PROCESO AUTOMÁTICO POR URL
+    # Si llegó token por la URL, verificamos y mostramos resultado:
+    def verify_and_render(token: str, sede: str):
+        row = find_row_by_token(ws, token)
+        if row:
+            append_checkin(chk, token, sede, True, "scan/url")
+            vals = ws.row_values(row)
+            nombre = vals[1] if len(vals) > 1 else "Asistente"
+            st.markdown(
+                f"""
+                <div style="border:2px solid {SUCCESS};border-radius:14px;padding:18px;background:#eafff7">
+                    <h3 style="color:{SUCCESS};margin:0">✔ Verificado</h3>
+                    <p style="margin:8px 0 0 0"><b>{nombre}</b><br/><span style="color:{MUTED}">{sede}</span></p>
+                </div>
+                """,
+                unsafe_allow_html=True
+            )
+        else:
+            append_checkin(chk, token, sede, False, "token no encontrado")
+            error_badge("Token no encontrado. Revisa que el QR sea el correcto.")
+
+    if incoming_token:
+        sede_for_url = incoming_sede or sede_staff
+        verify_and_render(incoming_token, sede_for_url)
+
+    # ---------- 2) SCAN CON CÁMARA (html5-qrcode)
+    st.divider()
+    st.markdown("#### Escanear ahora con la cámara")
 
     scanner_html = f"""
-    <div style="display:flex;gap:16px;flex-wrap:wrap;align-items:flex-start">
-      <div style="max-width:380px;">
-        <div id="reader" style="width:360px;height:360px;border:1px solid #e5e7eb;border-radius:10px;display:flex;align-items:center;justify-content:center;color:#6b7280">
-          <div style="text-align:center">
-            <div id="status" style='margin-bottom:10px;'>Cargando lector…</div>
-            <button id="startBtn" disabled style="padding:12px 16px;border-radius:12px;border:0;background:#9ca3af;color:#fff;font-weight:800">Iniciar escaneo</button>
-          </div>
-        </div>
-        <div style="margin-top:6px">
-          <button id="stopBtn" disabled style="padding:8px 12px;border-radius:10px;border:1px solid #d1d5db;background:#fff">Detener</button>
-        </div>
-      </div>
-      <div style="flex:1;min-width:260px;">
-        <div id="log" style="font-size:14px;white-space:pre-wrap;color:#374151"></div>
-      </div>
-    </div>
+    <div id="scanZone"></div>
+    <div id="scanResult" style="margin-top:8px;color:{MUTED}"></div>
 
+    <script src="https://cdn.jsdelivr.net/npm/html5-qrcode@2.3.11/minified/html5-qrcode.min.js"></script>
     <script>
-      // Cargar librería desde CDNJS y habilitar botón cuando esté lista
-      (function loadLib(){{
-        var s = document.createElement('script');
-        s.src = "https://cdnjs.cloudflare.com/ajax/libs/html5-qrcode/2.3.10/html5-qrcode.min.js";
-        s.async = true;
-        s.onload = function(){{
-          document.getElementById('status').innerText = "Lector listo. Pulsa Iniciar escaneo.";
-          var btn = document.getElementById('startBtn');
-          btn.disabled = false; btn.style.background = "{PRIMARY_COLOR}";
-        }};
-        s.onerror = function(){{
-          document.getElementById('status').innerText = "❌ No se pudo cargar la librería. Recarga la página.";
-        }};
-        document.head.appendChild(s);
-      }})();
+      const zone = document.getElementById('scanZone');
+      const res  = document.getElementById('scanResult');
 
-      const baseUrl = "{base_url_live}";
-      const sedeDef = "{sede_val_live}";
-      let html5Qr = null;
-      let running = false;
-
-      function addLog(msg){{
-        const el = document.getElementById("log");
-        el.innerText = (el.innerText ? el.innerText + "\\n" : "") + msg;
-      }}
-
-      function buildUrlFromToken(token){{
-        return baseUrl + "/?token=" + encodeURIComponent(token) + "&sede=" + encodeURIComponent(sedeDef);
-      }}
-
-      function onDecode(text){{
+      function handle(urlOrToken) {{
         try {{
-          let t = (text||"").trim();
-          let url = /^https?:\\/\\//i.test(t) ? t : buildUrlFromToken(t);
-          addLog("✅ QR: " + t + "\\n→ " + url);
-          if (running && html5Qr) {{
-            html5Qr.stop().catch(()=>{{}}).finally(()=>{{ running=false; }});
-          }}
-          window.location.href = url;
-        }} catch(e) {{
-          addLog("❌ Error procesando QR: " + e);
+          const u = new URL(urlOrToken);
+          // Si trae URL completa, redirigimos para que la app muestre el verificado
+          window.location.href = urlOrToken;
+          return;
+        }} catch (e) {{
+          // No es URL → construimos con sede por defecto
+          const sede = encodeURIComponent("{sede_staff}");
+          const base = window.location.origin + window.location.pathname;
+          window.location.href = base + "?token=" + encodeURIComponent(urlOrToken) + "&sede=" + sede;
         }}
       }}
 
-      function waitForLib(ms) {{
-        return new Promise((res, rej) => {{
-          const t0 = Date.now();
-          (function check(){{
-            if (window.Html5Qrcode) return res();
-            if (Date.now() - t0 > ms) return rej(new Error("html5-qrcode no disponible"));
-            setTimeout(check, 100);
-          }})();
+      function startScanner() {{
+        if (!window.Html5Qrcode) {{
+          res.innerHTML = "No se pudo iniciar el lector (Html5Qrcode no disponible).";
+          return;
+        }}
+        const html5QrCode = new Html5Qrcode("scanZone");
+        const config = {{
+          fps: 10,
+          qrbox: 240,
+          aspectRatio: 1.0,
+          rememberLastUsedCamera: true
+        }};
+        Html5Qrcode.getCameras().then(cams => {{
+          const camId = cams && cams.length ? cams[0].id : null;
+          if (!camId) {{
+            res.innerHTML = "No se encontraron cámaras disponibles.";
+            return;
+          }}
+          html5QrCode.start(
+            camId,
+            config,
+            decodedText => {{
+              res.innerHTML = "Leyendo…";
+              html5QrCode.stop().then(() => {{
+                handle(decodedText);
+              }});
+            }},
+            errorMsg => {{
+              // silencioso
+            }});
+        }}).catch(err => {{
+          res.innerHTML = "No fue posible listar cámaras: " + err;
         }});
       }}
 
-      async function startWith(constraints, label){{
-        addLog("• Intentando: " + label);
-        try {{
-          document.getElementById("reader").innerHTML = "";
-          html5Qr = new Html5Qrcode("reader", false);
-          await html5Qr.start(
-            constraints,
-            {{ fps: 12, qrbox: {{ width: 260, height: 260 }}, aspectRatio: 1.0, disableFlip: true }},
-            onDecode,
-            () => {{}}
-          );
-          running = true;
-          document.getElementById("stopBtn").disabled = false;
-          addLog("📷 Cámara iniciada con: " + label);
-          return true;
-        }} catch(e) {{
-          addLog("× Falló (" + label + "): " + (e && e.message ? e.message : e));
-          return false;
-        }}
-      }}
-
-      async function startScanner(){{
-        document.getElementById('status').innerText = "Abriendo cámara…";
-        document.getElementById('startBtn').disabled = true;
-        try {{ await waitForLib(4000); }} catch(e) {{
-          addLog("× Librería no lista: " + e.message);
-          document.getElementById('startBtn').disabled = false;
-          return;
-        }}
-        let cams = [];
-        try {{ cams = await Html5Qrcode.getCameras(); }} catch(e) {{ addLog("× No se pudieron listar cámaras: " + e); }}
-
-        if (cams && cams.length){{
-          let camId = cams[0].id;
-          const back = cams.find(d=>/back|rear|environment/i.test(d.label));
-          if (back) camId = back.id;
-          if (await startWith({{ deviceId: {{ exact: camId }} }}, "deviceId exact (trasera si hay)")) return;
-        }}
-        if (await startWith({{ facingMode: {{ exact: "environment" }} }}, "facingMode exact environment")) return;
-        if (await startWith({{ facingMode: {{ ideal: "environment" }} }}, "facingMode ideal environment")) return;
-        await startWith({{ facingMode: "user" }}, "facingMode user");
-      }}
-
-      document.getElementById("startBtn").addEventListener("click", startScanner);
-      document.getElementById("stopBtn").addEventListener("click", ()=>{{
-        if (running && html5Qr){{
-          html5Qr.stop().catch(()=>{{}}).finally(()=>{{
-            running=false;
-            document.getElementById("stopBtn").disabled = true;
-            document.getElementById('status').innerText = "Escaneo detenido";
-          }});
-        }}
-      }});
+      // Botón ligero para iniciar (necesario en iOS por gesto del usuario)
+      const btn = document.createElement("button");
+      btn.textContent = "Abrir cámara y escanear";
+      btn.style = "padding:10px 14px;border-radius:10px;border:1px solid #ddd;background:'{PRIMARY}';";
+      btn.onclick = startScanner;
+      zone.appendChild(btn);
     </script>
     """
-    components.html(scanner_html, height=700, scrolling=False)
-    components.html(diag_html,    height=420, scrolling=False)
-    components.html(html_photo,   height=180, scrolling=False)
 
+    components.html(scanner_html, height=420, scrolling=False)
 
-    # (Debajo deja tu Diagnóstico y el Modo por foto tal como los tienes, con keys únicos)
-
-# ==========================
-# FIN
-# ==========================
+    # ---------- 3) VERIFICACIÓN MANUAL (pegando token o URL)
+    st.markdown("#### Verificar manualmente")
+    manual = st.text_input("Pega aquí el token o la URL completa del QR", key="manual_input_staff")
+    if st.button("Verificar", key="manual_btn_staff"):
+        txt = (manual or "").strip()
+        if not txt:
+            error_badge("Introduce token o URL.")
+        else:
+            if txt.startswith("http"):
+                try:
+                    from urllib.parse import urlparse, parse_qs
+                    u = urlparse(txt)
+                    q = parse_qs(u.query)
+                    tok = (q.get("token") or [""])[0]
+                    sede = (q.get("sede") or [sede_staff])[0]
+                    verify_and_render(tok, sede)
+                except Exception:
+                    error_badge("URL inválida.")
+            else:
+                verify_and_render(txt, sede_staff)
