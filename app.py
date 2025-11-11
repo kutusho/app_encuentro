@@ -491,87 +491,212 @@ with tabs[3]:
         else:
             st.warning("Ingresa un token o URL.")
 
-# ---- Staff (fallback iPhone: escaneo por foto con jsQR) ----
+# ---- Staff (v5: carga robusta de html5-qrcode en iOS) ----
 with tabs[3]:
-    st.subheader("Modo Staff — Escaneo por foto (compatibilidad iPhone)")
-    st.caption("Toma una foto del QR. Decodificamos y te enviamos a la verificación. Funciona incluso si el lector continuo no abre el visor en iOS.")
+    st.subheader("Modo Staff — Escaneo con cámara")
+    st.caption("Si el lector no abre, usa el modo por foto más abajo (compatibilidad iPhone).")
 
     sede_staff = st.selectbox(
         "Sede por defecto si el QR trae solo token (sin URL):",
         ["Holiday Inn Tuxtla (Día 1)", "Ex Convento Santo Domingo (Día 2)", "Museo de los Altos (Día 3)"],
-        index=0,
-        key="sede_foto"
+        index=0
     )
     sede_val = sede_staff.replace('"', '\\"')
     base_url = st.secrets.get("base_url", DEFAULT_BASE_URL)
 
-    html = f"""
+    scanner_html = f"""
     <div style="display:flex;gap:16px;flex-wrap:wrap;align-items:flex-start">
-      <div style="max-width:420px;">
-        <input id="qrFile" type="file" accept="image/*" capture="environment"
-               style="padding:12px;border:1px solid #e5e7eb;border-radius:12px;width:100%">
-        <canvas id="qrCanvas" style="display:none"></canvas>
-        <div id="result" style="margin-top:10px;font-family:system-ui,-apple-system,Segoe UI,Roboto,Ubuntu,Cantarell,Noto Sans,Helvetica,Arial;"></div>
+      <div style="max-width:380px;">
+        <div id="reader" style="width:360px;height:360px;border:1px solid #e5e7eb;border-radius:10px;display:flex;align-items:center;justify-content:center;color:#6b7280">
+          <div style="text-align:center">
+            <div id="status" style='margin-bottom:10px;'>Cargando lector…</div>
+            <button id="startBtn" disabled style="padding:12px 16px;border-radius:12px;border:0;background:#9ca3af;color:#fff;font-weight:800">Iniciar escaneo</button>
+          </div>
+        </div>
+        <div style="margin-top:6px">
+          <button id="stopBtn" disabled style="padding:8px 12px;border-radius:10px;border:1px solid #d1d5db;background:#fff">Detener</button>
+        </div>
       </div>
-      <div style="flex:1;min-width:260px;color:#374151;font-size:14px;white-space:pre-wrap" id="log"></div>
+      <div style="flex:1;min-width:260px;">
+        <div id="log" style="font-size:14px;white-space:pre-wrap;color:#374151"></div>
+      </div>
     </div>
 
-    <!-- jsQR para decodificar QR en imágenes -->
-    <script src="https://cdn.jsdelivr.net/npm/jsqr@1.4.0/dist/jsQR.js"></script>
     <script>
+      // 1) Cargar librería desde CDNJS (más estable en iOS)
+      (function loadLib(){{
+        var s = document.createElement('script');
+        s.src = "https://cdnjs.cloudflare.com/ajax/libs/html5-qrcode/2.3.10/html5-qrcode.min.js";
+        s.async = true;
+        s.onload = function(){{
+          document.getElementById('status').innerText = "Lector listo. Pulsa Iniciar escaneo.";
+          var btn = document.getElementById('startBtn');
+          btn.disabled = false; btn.style.background = "#2563eb";
+        }};
+        s.onerror = function(){{
+          document.getElementById('status').innerText = "❌ No se pudo cargar la librería. Reintenta recargar.";
+        }};
+        document.head.appendChild(s);
+      }})();
+
       const baseUrl = "{base_url}";
       const sedeDef = "{sede_val}";
+      let html5Qr = null;
+      let running = false;
 
-      function log(msg) {{
+      function addLog(msg){{
         const el = document.getElementById("log");
         el.innerText = (el.innerText ? el.innerText + "\\n" : "") + msg;
       }}
 
-      function toVerifyUrl(text) {{
-        const t = (text||"").trim();
-        if (/^https?:\\/\\//i.test(t)) return t;
-        return baseUrl + "/?token=" + encodeURIComponent(t) + "&sede=" + encodeURIComponent(sedeDef);
+      function buildUrlFromToken(token){{
+        return baseUrl + "/?token=" + encodeURIComponent(token) + "&sede=" + encodeURIComponent(sedeDef);
       }}
 
-      document.getElementById("qrFile").addEventListener("change", async (ev) => {{
-        const file = ev.target.files && ev.target.files[0];
-        if (!file) return;
-        const img = new Image();
-        const url = URL.createObjectURL(file);
-        img.onload = () => {{
-          try {{
-            const canvas = document.getElementById("qrCanvas");
-            const ctx = canvas.getContext("2d");
-            canvas.width = img.naturalWidth;
-            canvas.height = img.naturalHeight;
-            ctx.drawImage(img, 0, 0);
-            const imageData = ctx.getImageData(0, 0, canvas.width, canvas.height);
-            const code = jsQR(imageData.data, canvas.width, canvas.height, {{ inversionAttempts: "attemptBoth" }});
-            if (code && code.data) {{
-              const dest = toVerifyUrl(code.data);
-              document.getElementById("result").innerHTML = "✅ QR leído:<br><code>" + code.data + "</code><br>Abriendo verificación…";
-              window.location.href = dest;
-            }} else {{
-              document.getElementById("result").innerHTML = "❌ No se detectó un QR claro en la foto. Intenta acercar y enfocar.";
-            }}
-          }} catch(e) {{
-            document.getElementById("result").innerHTML = "❌ Error al procesar la imagen: " + e;
-            log(e.toString());
-          }} finally {{
-            URL.revokeObjectURL(url);
+      function onDecode(text){{
+        try {{
+          let url = /^https?:\\/\\//i.test(text) ? text.trim() : buildUrlFromToken(text.trim());
+          addLog("✅ QR: " + text + "\\n→ " + url);
+          if (running && html5Qr) {{
+            html5Qr.stop().catch(()=>{{}}).finally(()=>{{ running=false; }});
           }}
-        }};
-        img.onerror = () => {{
-          document.getElementById("result").textContent = "❌ No se pudo cargar la imagen.";
+          window.location.href = url;
+        }} catch(e) {{
+          addLog("❌ Error procesando QR: " + e);
+        }}
+      }}
+
+      function waitForLib(timeoutMs){{
+        return new Promise((resolve, reject)=>{{
+          const t0 = Date.now();
+          (function check(){{
+            if (window.Html5Qrcode && window.Html5QrcodeScanner) return resolve();
+            if (Date.now() - t0 > timeoutMs) return reject(new Error("html5-qrcode no disponible"));
+            setTimeout(check, 100);
+          }})();
+        }});
+      }}
+
+      async function startWithConstraints(constraints, label){{
+        addLog("• Intentando: " + label);
+        try {{
+          document.getElementById("reader").innerHTML = "";
+          html5Qr = new Html5Qrcode("reader", /* verbose= */ false);
+          await html5Qr.start(
+            constraints,
+            {{
+              fps: 12,
+              qrbox: {{ width: 260, height: 260 }},
+              aspectRatio: 1.0,
+              disableFlip: true,
+              experimentalFeatures: {{ useBarCodeDetectorIfSupported: true }}
+            }},
+            onDecode,
+            () => {{}}
+          );
+          running = true;
+          document.getElementById("stopBtn").disabled = false;
+          addLog("📷 Cámara iniciada con: " + label);
+          return true;
+        }} catch(e) {{
+          addLog("× Falló (" + label + "): " + (e && e.message ? e.message : e));
+          return false;
+        }}
+      }}
+
+      async function startScanner(){{
+        document.getElementById('status').innerText = "Abriendo cámara…";
+        document.getElementById('startBtn').disabled = true;
+
+        try {{
+          // 2) Esperar a que la librería exista (clave en iOS)
+          await waitForLib(4000);
+        }} catch(e){{
+          addLog("× Librería no lista: " + e.message);
+          document.getElementById('startBtn').disabled = false;
+          return;
+        }}
+
+        // 3) Estrategias de arranque
+        let cams = [];
+        try {{ cams = await Html5Qrcode.getCameras(); }} catch(e) {{
+          addLog("× No se pudieron listar cámaras: " + e);
+        }}
+
+        if (cams && cams.length){{
+          let camId = cams[0].id;
+          const back = cams.find(d=>/back|rear|environment/i.test(d.label));
+          if (back) camId = back.id;
+          if (await startWithConstraints({{ deviceId: {{ exact: camId }} }}, "deviceId exact (trasera si hay)")) return;
+        }}
+        if (await startWithConstraints({{ facingMode: {{ exact: "environment" }} }}, "facingMode exact environment")) return;
+        if (await startWithConstraints({{ facingMode: {{ ideal: "environment" }} }}, "facingMode ideal environment")) return;
+        await startWithConstraints({{ facingMode: "user" }}, "facingMode user");
+      }}
+
+      document.getElementById("startBtn").addEventListener("click", startScanner);
+      document.getElementById("stopBtn").addEventListener("click", ()=>{{
+        if (running && html5Qr){{
+          html5Qr.stop().catch(()=>{{}}).finally(()=>{{
+            running=false;
+            document.getElementById("stopBtn").disabled = true;
+            document.getElementById('status').innerText = "Escaneo detenido";
+          }});
+        }}
+      }});
+    </script>
+    """
+
+    components.html(scanner_html, height=700, scrolling=False)
+
+    st.divider()
+    st.markdown("### 🔍 Diagnóstico rápido (preview sin escanear)")
+    diag_html = """
+    <video id="videoTest" autoplay playsinline style="width:100%;max-width:360px;border-radius:8px;background:#000"></video>
+    <div id="diagMsg" style="font-size:14px;color:#6b7280;margin-top:6px"></div>
+    <script>
+      const msg = document.getElementById('diagMsg');
+      navigator.mediaDevices.getUserMedia({ video: { facingMode: { ideal: "environment" } } })
+      .then(stream => { document.getElementById('videoTest').srcObject = stream; msg.innerText = "Preview activo"; })
+      .catch(e => { msg.innerText = "❌ " + e.message; });
+    </script>
+    """
+    components.html(diag_html, height=420)
+
+    st.divider()
+    st.markdown("### 🖼️ Modo por foto (100% compatible iPhone)")
+    html_photo = f"""
+    <input id="qrFile" type="file" accept="image/*" capture="environment"
+           style="padding:12px;border:1px solid #e5e7eb;border-radius:12px;width:100%;max-width:420px">
+    <div id="photoResult" style="margin-top:10px;font-family:system-ui,-apple-system,Segoe UI,Roboto,Ubuntu,Cantarell,Noto Sans,Helvetica,Arial;"></div>
+    <canvas id="qrCanvas" style="display:none"></canvas>
+    <script src="https://cdn.jsdelivr.net/npm/jsqr@1.4.0/dist/jsQR.js"></script>
+    <script>
+      const baseUrl = "{base_url}";
+      const sedeDef = "{sede_val}";
+      function toUrl(t){{ return /^https?:\\/\\//i.test(t) ? t : baseUrl + "/?token=" + encodeURIComponent(t) + "&sede=" + encodeURIComponent(sedeDef); }}
+      document.getElementById("qrFile").addEventListener("change", (ev) => {{
+        const f = ev.target.files && ev.target.files[0]; if (!f) return;
+        const img = new Image(); const url = URL.createObjectURL(f);
+        img.onload = () => {{
+          const c = document.getElementById("qrCanvas"), x = c.getContext("2d");
+          c.width = img.naturalWidth; c.height = img.naturalHeight; x.drawImage(img,0,0);
+          const d = x.getImageData(0,0,c.width,c.height);
+          const code = jsQR(d.data, c.width, c.height, {{ inversionAttempts: "attemptBoth" }});
+          if (code && code.data) {{
+            document.getElementById("photoResult").innerHTML = "✅ QR leído. Abriendo…";
+            window.location.href = toUrl(code.data);
+          }} else {{
+            document.getElementById("photoResult").innerText = "❌ No se detectó un QR claro. Intenta acercar y enfocar.";
+          }}
           URL.revokeObjectURL(url);
         }};
+        img.onerror = () => {{ document.getElementById("photoResult").innerText = "❌ No se pudo cargar la imagen."; URL.revokeObjectURL(url); }};
         img.src = url;
       }});
     </script>
     """
-    components.html(html, height=260, scrolling=False)
-
-    st.info("Sugerencia: usa este modo en iPhone. En Android/computadora puedes usar el lector continuo.")
+    components.html(html_photo, height=180, scrolling=False)
 
 
 # ---- Reportes ----
