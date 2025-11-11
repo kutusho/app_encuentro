@@ -10,6 +10,8 @@ from pathlib import Path
 import gspread
 from google.oauth2.service_account import Credentials
 from gspread_dataframe import set_with_dataframe
+import streamlit.components.v1 as components
+
 
 # ============================
 # CONFIGURACIÓN GENERAL
@@ -270,7 +272,7 @@ if "token" in params:
 # ============================
 # PESTAÑAS PRINCIPALES
 # ============================
-tabs = st.tabs(["📝 Registro", "📊 Reportes", "⚙️ Ajustes"])
+tabs = st.tabs(["📝 Registro", "📊 Reportes", "⚙️ Ajustes", "🛡️ Staff"])
 
 # ---- Registro ----
 with tabs[0]:
@@ -336,6 +338,94 @@ with tabs[0]:
         "SELECT folio, nombre, institucion, tipo_cuota, email, telefono, registrado_en "
         "FROM attendees ORDER BY id DESC LIMIT 50", conn)
     st.dataframe(df, use_container_width=True)
+         
+# ---- Staff ----
+with tabs[3]:
+    st.subheader("Modo Staff — Escaneo con cámara")
+    st.caption("Apunta la cámara al QR. Si el QR contiene la URL completa, redirige de inmediato a la pantalla de verificación.")
+
+    # Sede por defecto si el QR viniera SOLO con token (no con URL completa)
+    sede_staff = st.selectbox(
+        "Sede por defecto si el QR trae solo token (sin URL):",
+        ["Holiday Inn Tuxtla (Día 1)", "Ex Convento Santo Domingo (Día 2)", "Museo de los Altos (Día 3)"],
+        index=0
+    )
+
+    # Construye un HTML que usa html5-qrcode (sin libs adicionales de Python)
+    # Si el QR trae un token "puro", armamos la URL con la base del sitio actual.
+    # Si el QR trae URL completa, la usamos tal cual.
+    sede_val = sede_staff.replace('"', '\\"')
+
+    scanner_html = f"""
+    <div style="display:flex;gap:16px;flex-wrap:wrap;align-items:flex-start">
+      <div style="max-width:360px;">
+        <div id="reader" style="width:360px;"></div>
+        <p style="margin-top:8px;color:#555;font-family:system-ui, -apple-system, Segoe UI, Roboto, Ubuntu, Cantarell, Noto Sans, Helvetica, Arial, 'Apple Color Emoji','Segoe UI Emoji';">
+          Consejo: Si tu dispositivo lo permite, activa la linterna desde el ícono de la cámara.
+        </p>
+      </div>
+      <div style="flex:1;min-width:260px;">
+        <div id="last-result" style="font-size:16px;white-space:pre-wrap;"></div>
+      </div>
+    </div>
+
+    <script src="https://unpkg.com/html5-qrcode"></script>
+    <script>
+      function safeRedirect(decodedText) {{
+        try {{
+          let url = decodedText.trim();
+          if (!/^https?:\\/\\//i.test(url)) {{
+            // Token puro -> construimos URL con la sede por defecto
+            const token = encodeURIComponent(url);
+            const sede = encodeURIComponent("{sede_val}");
+            url = window.location.origin + "/?token=" + token + "&sede=" + sede;
+          }}
+          document.getElementById("last-result").innerText = "QR leído:\\n" + decodedText + "\\n\\nAbriendo: " + url;
+          window.location.href = url; // Redirigir a la verificación (pantalla grande)
+        }} catch(e) {{
+          document.getElementById("last-result").innerText = "Error procesando QR: " + e;
+          console.error(e);
+        }}
+      }}
+
+      function onScanSuccess(decodedText, decodedResult) {{
+        // Detenemos el scanner tras un acierto para evitar lecturas múltiples
+        html5QrcodeScanner.clear();
+        safeRedirect(decodedText);
+      }}
+
+      var html5QrcodeScanner = new Html5QrcodeScanner("reader", {{
+        fps: 12,
+        qrbox: 260,
+        aspectRatio: 1.0,
+        rememberLastUsedCamera: true,
+        showTorchButtonIfSupported: true,
+        showZoomSliderIfSupported: true
+      }}, /* verbose= */ false);
+
+      html5QrcodeScanner.render(onScanSuccess);
+    </script>
+    """
+
+    components.html(scanner_html, height=520, scrolling=False)
+
+    st.divider()
+    st.markdown("### Alternativa manual (por si falla la cámara)")
+    manual_token = st.text_input("Pega aquí el token o la URL completa del QR")
+    if st.button("Verificar manualmente"):
+        if manual_token.strip():
+            # Si pega token, construimos URL; si pega URL, la usamos directo.
+            if manual_token.strip().lower().startswith("http"):
+                st.write("Abriendo verificación…")
+                st.markdown(f"[Ir a verificación]({manual_token.strip()})")
+            else:
+                sede = sede_staff
+                url = f"{st.secrets.get('base_url', DEFAULT_BASE_URL)}/?token={{manual_token.strip()}}&sede={{sede}}"
+                st.write("Abriendo verificación…")
+                st.markdown(f"[Ir a verificación]({url})")
+        else:
+            st.warning("Ingresa un token o URL.")
+
 
 # ---- Reportes ----
 with tabs[1]:
