@@ -340,28 +340,26 @@ with tabs[0]:
     st.dataframe(df, use_container_width=True)
          
 # ---- Staff ----
+# ---- Staff ----
 with tabs[3]:
     st.subheader("Modo Staff — Escaneo con cámara")
-    st.caption("Apunta la cámara al QR. Si el QR contiene la URL completa, redirige de inmediato a la pantalla de verificación.")
+    st.caption("Apunta la cámara al QR. Si el QR contiene la URL completa, redirige de inmediato a la verificación.")
 
-    # Sede por defecto si el QR viniera SOLO con token (no con URL completa)
     sede_staff = st.selectbox(
         "Sede por defecto si el QR trae solo token (sin URL):",
         ["Holiday Inn Tuxtla (Día 1)", "Ex Convento Santo Domingo (Día 2)", "Museo de los Altos (Día 3)"],
         index=0
     )
 
-    # Construye un HTML que usa html5-qrcode (sin libs adicionales de Python)
-    # Si el QR trae un token "puro", armamos la URL con la base del sitio actual.
-    # Si el QR trae URL completa, la usamos tal cual.
     sede_val = sede_staff.replace('"', '\\"')
+    base_url = st.secrets.get("base_url", DEFAULT_BASE_URL)
 
     scanner_html = f"""
     <div style="display:flex;gap:16px;flex-wrap:wrap;align-items:flex-start">
       <div style="max-width:360px;">
         <div id="reader" style="width:360px;"></div>
-        <p style="margin-top:8px;color:#555;font-family:system-ui, -apple-system, Segoe UI, Roboto, Ubuntu, Cantarell, Noto Sans, Helvetica, Arial, 'Apple Color Emoji','Segoe UI Emoji';">
-          Consejo: Si tu dispositivo lo permite, activa la linterna desde el ícono de la cámara.
+        <p style="margin-top:8px;color:#555;font-family:system-ui,-apple-system,Segoe UI,Roboto,Ubuntu,Cantarell,Noto Sans,Helvetica,Arial;">
+          Si no aparece el permiso de cámara, toca el ícono <b>aA</b> en la barra de Safari → <b>Website Settings</b> → <b>Camera: Allow</b>.
         </p>
       </div>
       <div style="flex:1;min-width:260px;">
@@ -369,59 +367,72 @@ with tabs[3]:
       </div>
     </div>
 
-    <script src="https://unpkg.com/html5-qrcode"></script>
+    <!-- Carga correcta de html5-qrcode (versión minificada) -->
+    <script src="https://unpkg.com/html5-qrcode@2.3.10/minified/html5-qrcode.min.js"></script>
     <script>
+      // Construye URL si el QR trae solo el token
+      function buildUrlFromToken(token) {{
+        const sede = encodeURIComponent("{sede_val}");
+        const base = "{base_url}";
+        return base + "/?token=" + encodeURIComponent(token) + "&sede=" + sede;
+      }}
+
       function safeRedirect(decodedText) {{
         try {{
-          let url = decodedText.trim();
-          if (!/^https?:\\/\\//i.test(url)) {{
-            // Token puro -> construimos URL con la sede por defecto
-            const token = encodeURIComponent(url);
-            const sede = encodeURIComponent("{sede_val}");
-            url = window.location.origin + "/?token=" + token + "&sede=" + sede;
+          let txt = (decodedText || "").trim();
+          let url = txt;
+
+          if (!/^https?:\\/\\//i.test(txt)) {{
+            // Es token 'puro'
+            url = buildUrlFromToken(txt);
           }}
-          document.getElementById("last-result").innerText = "QR leído:\\n" + decodedText + "\\n\\nAbriendo: " + url;
-          window.location.href = url; // Redirigir a la verificación (pantalla grande)
-        }} catch(e) {{
+
+          document.getElementById("last-result").innerText =
+            "QR leído:\\n" + txt + "\\n\\nAbriendo: " + url;
+
+          window.location.href = url; // redirige a la verificación en grande
+        }} catch (e) {{
           document.getElementById("last-result").innerText = "Error procesando QR: " + e;
           console.error(e);
         }}
       }}
 
       function onScanSuccess(decodedText, decodedResult) {{
-        // Detenemos el scanner tras un acierto para evitar lecturas múltiples
+        // Detiene el scanner al primer acierto
         html5QrcodeScanner.clear();
         safeRedirect(decodedText);
       }}
 
-      var html5QrcodeScanner = new Html5QrcodeScanner("reader", {{
-        fps: 12,
-        qrbox: 260,
-        aspectRatio: 1.0,
-        rememberLastUsedCamera: true,
-        showTorchButtonIfSupported: true,
-        showZoomSliderIfSupported: true
-      }}, /* verbose= */ false);
+      // Inicializa scanner con cámara trasera si es posible
+      var html5QrcodeScanner = new Html5QrcodeScanner(
+        "reader",
+        {{
+          fps: 12,
+          qrbox: 260,
+          aspectRatio: 1.0,
+          rememberLastUsedCamera: true,
+          showTorchButtonIfSupported: true,
+          showZoomSliderIfSupported: true,
+          facingMode: {{ exact: "environment" }}
+        }},
+        /* verbose= */ false
+      );
 
       html5QrcodeScanner.render(onScanSuccess);
     </script>
     """
 
-    components.html(scanner_html, height=520, scrolling=False)
+    components.html(scanner_html, height=560, scrolling=False)
 
     st.divider()
-    st.markdown("### Alternativa manual (por si falla la cámara)")
+    st.markdown("### Alternativa manual")
     manual_token = st.text_input("Pega aquí el token o la URL completa del QR")
     if st.button("Verificar manualmente"):
         if manual_token.strip():
-            # Si pega token, construimos URL; si pega URL, la usamos directo.
             if manual_token.strip().lower().startswith("http"):
-                st.write("Abriendo verificación…")
                 st.markdown(f"[Ir a verificación]({manual_token.strip()})")
             else:
-                sede = sede_staff
-                url = f"{st.secrets.get('base_url', DEFAULT_BASE_URL)}/?token={{manual_token.strip()}}&sede={{sede}}"
-                st.write("Abriendo verificación…")
+                url = f"{base_url}/?token={manual_token.strip()}&sede={sede_staff}"
                 st.markdown(f"[Ir a verificación]({url})")
         else:
             st.warning("Ingresa un token o URL.")
