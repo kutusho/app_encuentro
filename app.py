@@ -339,7 +339,7 @@ with tabs[0]:
         "FROM attendees ORDER BY id DESC LIMIT 50", conn)
     st.dataframe(df, use_container_width=True)
          
-# ---- Staff ----
+
 # ---- Staff ----
 with tabs[3]:
     st.subheader("Modo Staff — Escaneo con cámara")
@@ -436,6 +436,18 @@ with tabs[3]:
                 st.markdown(f"[Ir a verificación]({url})")
         else:
             st.warning("Ingresa un token o URL.")
+
+with st.expander("🔍 Probar cámara (diagnóstico)"):
+    test_html = """
+    <video id="videoTest" autoplay playsinline style="width:100%;max-width:360px;border-radius:8px"></video>
+    <script>
+      navigator.mediaDevices.getUserMedia({ video: { facingMode: "environment" } })
+      .then(stream => { document.getElementById('videoTest').srcObject = stream; })
+      .catch(e => { document.getElementById('videoTest').innerText = '❌ ' + e.message; });
+    </script>
+    """
+    components.html(test_html, height=400)
+
 
 
 # ---- Reportes ----
