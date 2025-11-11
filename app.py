@@ -1,509 +1,255 @@
-import streamlit as st
-import pandas as pd
-import numpy as np
-import qrcode
-from PIL import Image
+# app.py
+import os
 import io
-import sqlite3
-from datetime import datetime
-from pathlib import Path
-import gspread
-from google.oauth2.service_account import Credentials
-from gspread_dataframe import set_with_dataframe
+import uuid
+import time
+import qrcode
+import pandas as pd
+import streamlit as st
 import streamlit.components.v1 as components
+from datetime import datetime
+from google.oauth2.service_account import Credentials
+import gspread
 
-
-# ============================
-# CONFIGURACIÓN GENERAL
-# ============================
-EVENT_NAME = "Primer Encuentro Internacional de Guías de Turistas en Chiapas"
-EVENT_DATES = "14–16 de noviembre de 2025"
-EVENT_TAGLINE = "Saberes que unen, culturas que inspiran."
-ORG_NAME = "Colegio de Guías de Turistas de Chiapas A.C."
-
-ASSETS = Path("assets")
-LOGO = ASSETS / "logo_colegio.jpg"
-
-PRIMARY_COLOR = "#116699"
-SUCCESS_COLOR = "#16a34a"
-DANGER_COLOR  = "#dc2626"
-WARNING_COLOR = "#f59e0b"
-
-APP_TITLE = f"Registro y Acceso | {EVENT_NAME}"
-
-# Ruta local de la base de datos
-DATA_DIR = Path.cwd() / "data"
-DATA_DIR.mkdir(parents=True, exist_ok=True)
-DB_PATH = str(DATA_DIR / "app.db")
-
-DEFAULT_BASE_URL = st.secrets.get("base_url", "https://encuentro-app.streamlit.app")
-
-st.set_page_config(page_title=APP_TITLE, page_icon=str(LOGO), layout="wide")
-
-st.markdown("""
-<style>
-.stButton>button {padding: 0.6rem 1rem; border-radius: 10px; font-weight: 600;}
-.block-container {padding-top: 2rem;}
-.status {color:#fff;padding:24px;border-radius:16px;text-align:center;
-         font-size:28px;font-weight:800;}
-</style>
-""", unsafe_allow_html=True)
-
-# ============================
-# ENCABEZADO
-# ============================
-col_logo, col_title = st.columns([1,3], vertical_alignment="center")
-with col_logo:
-    if LOGO.exists():
-        st.image(str(LOGO), use_column_width=True)
-with col_title:
-    st.markdown(f"<h1 style='margin-bottom:0'>{EVENT_NAME}</h1>", unsafe_allow_html=True)
-    st.markdown(f"<h4 style='margin-top:0;color:#374151'>{EVENT_DATES}</h4>", unsafe_allow_html=True)
-    st.caption(f"{EVENT_TAGLINE} • {ORG_NAME}")
-
-# ============================
-# BASE DE DATOS LOCAL (SQLite)
-# ============================
-def init_db():
-    con = sqlite3.connect(DB_PATH)
-    cur = con.cursor()
-    cur.execute("""
-        CREATE TABLE IF NOT EXISTS attendees (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            folio TEXT UNIQUE,
-            nombre TEXT,
-            institucion TEXT,
-            tipo_cuota TEXT,
-            email TEXT,
-            telefono TEXT,
-            qr_token TEXT UNIQUE,
-            registrado_en TEXT
-        )
-    """)
-    cur.execute("""
-        CREATE TABLE IF NOT EXISTS checkins (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            attendee_id INTEGER,
-            sede TEXT,
-            realizado_en TEXT,
-            FOREIGN KEY(attendee_id) REFERENCES attendees(id)
-        )
-    """)
-    cur.execute("""
-        CREATE TABLE IF NOT EXISTS settings (
-            key TEXT PRIMARY KEY,
-            value TEXT
-        )
-    """)
-    con.commit()
-    con.close()
-
-def get_conn():
-    return sqlite3.connect(DB_PATH, check_same_thread=False)
-
-def next_folio(con):
-    df = pd.read_sql_query("SELECT folio FROM attendees ORDER BY id DESC LIMIT 1", con)
-    if df.empty:
-        return "CGTCH-25-0001"
-    last = df.folio.iloc[0]
-    try:
-        num = int(last.split("-")[-1])
-        return f"CGTCH-25-{num+1:04d}"
-    except Exception:
-        import time
-        return f"CGTCH-25-{int(time.time())%10000:04d}"
-
-def get_setting(con, key, default=None):
-    df = pd.read_sql_query("SELECT value FROM settings WHERE key = ?", con, params=(key,))
-    return (df.iloc[0]["value"] if not df.empty else default)
-
-def set_setting(con, key, value):
-    cur = con.cursor()
-    cur.execute(
-        "INSERT INTO settings(key,value) VALUES(?,?) "
-        "ON CONFLICT(key) DO UPDATE SET value=excluded.value", (key, value)
-    )
-    con.commit()
-
-def add_attendee(con, data):
-    folio = next_folio(con)
-    import time, random
-    token = f"TKN-{int(time.time())}-{random.randint(1000,9999)}"
-    now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-    cur = con.cursor()
-    cur.execute("""
-        INSERT INTO attendees (folio, nombre, institucion, tipo_cuota,
-            email, telefono, qr_token, registrado_en)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-    """, (folio, data["nombre"], data.get("institucion",""),
-          data.get("tipo_cuota",""), data.get("email",""),
-          data.get("telefono",""), token, now))
-    con.commit()
-    return folio, token
-
-def find_attendee_by_token(con, token):
-    df = pd.read_sql_query("SELECT * FROM attendees WHERE qr_token = ?", con, params=(token,))
-    return df.iloc[0].to_dict() if not df.empty else None
-
-def get_checkins_for_attendee(con, attendee_id):
-    return pd.read_sql_query(
-        "SELECT * FROM checkins WHERE attendee_id = ? ORDER BY id DESC",
-        con, params=(attendee_id,)
-    )
-
-def add_checkin(con, attendee_id, sede):
-    now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-    cur = con.cursor()
-    cur.execute(
-        "INSERT INTO checkins (attendee_id, sede, realizado_en) VALUES (?, ?, ?)",
-        (attendee_id, sede, now)
-    )
-    con.commit()
-
-def big_status(text, bg):
-    st.markdown(f"<div class='status' style='background:{bg}'>{text}</div>",
-                unsafe_allow_html=True)
-
-def generate_qr_image(data_text: str) -> Image.Image:
-    qr = qrcode.QRCode(version=1, box_size=10, border=2)
-    qr.add_data(data_text)
-    qr.make(fit=True)
-    img = qr.make_image(fill_color="black", back_color="white")
-    return img
-
-# ============================
-# GOOGLE SHEETS (gspread)
-# ============================
-SCOPES = [
-    "https://www.googleapis.com/auth/spreadsheets",
-    "https://www.googleapis.com/auth/drive",
-]
-creds = Credentials.from_service_account_info(
-    st.secrets["gcp_service_account"], scopes=SCOPES
+# ==========================
+# CONFIGURACIÓN BÁSICA
+# ==========================
+st.set_page_config(
+    page_title="Primer Encuentro Internacional de Guías de Turistas en Chiapas",
+    page_icon="✅",
+    layout="wide",
 )
-gc = gspread.authorize(creds)
 
-SHEET_ID = st.secrets["sheets"]["spreadsheet_id"]
-ATT_WS = st.secrets["sheets"]["attendees_ws"]
-CHK_WS = st.secrets["sheets"]["checkins_ws"]
+DEFAULT_BASE_URL = st.secrets.get("base_url", "https://encuentro.streamlit.app")
+
+LOGO_PATH = "assets/logo_colegio.png"
+HERO_PATH = "assets/hero.png"
+
+PRIMARY_COLOR = "#0b5f8a"   # azul institucional
+ACCENT_COLOR  = "#2fa24b"   # verde institucional
+
+# ==========================
+# UTILIDADES
+# ==========================
+@st.cache_resource(show_spinner=False)
+def get_gspread_client():
+    sa = st.secrets["gcp_service_account"]
+    scopes = [
+        "https://www.googleapis.com/auth/spreadsheets",
+        "https://www.googleapis.com/auth/drive",
+    ]
+    creds = Credentials.from_service_account_info(sa, scopes=scopes)
+    return gspread.authorize(creds)
 
 @st.cache_resource(show_spinner=False)
-def get_or_create_spreadsheet():
-    sh = gc.open_by_key(SHEET_ID)
-    try:
-        sh.worksheet(ATT_WS)
-    except gspread.WorksheetNotFound:
-        sh.add_worksheet(title=ATT_WS, rows=1000, cols=30)
-    try:
-        sh.worksheet(CHK_WS)
-    except gspread.WorksheetNotFound:
-        sh.add_worksheet(title=CHK_WS, rows=1000, cols=30)
-    return sh
+def get_worksheets():
+    gc = get_gspread_client()
+    ss_id = st.secrets["sheets"]["spreadsheet_id"]
+    ws_att = st.secrets["sheets"]["attendees_ws"]
+    ws_chk = st.secrets["sheets"]["checkins_ws"]
+    ss = gc.open_by_key(ss_id)
+    w_att = ss.worksheet(ws_att)
+    w_chk = ss.worksheet(ws_chk)
+    # Garantizar encabezados
+    ensure_headers(w_att, ["timestamp","nombre","institucion","cuota","email","telefono","token","sede_default"])
+    ensure_headers(w_chk, ["timestamp","token","sede","origen"])
+    return w_att, w_chk
 
-sh = get_or_create_spreadsheet()
+def ensure_headers(ws, headers):
+    cur = ws.row_values(1)
+    if [h.lower() for h in cur] != [h.lower() for h in headers]:
+        ws.clear()
+        ws.append_row(headers)
 
-def append_attendee_row(row_dict: dict):
-    cols = ["folio","nombre","institucion","tipo_cuota","email","telefono","registrado_en","qr_token"]
-    ws = sh.worksheet(ATT_WS)
-    ws.append_row([row_dict.get(c,"") for c in cols], value_input_option="USER_ENTERED")
+def df_attendees():
+    w_att, _ = get_worksheets()
+    vals = w_att.get_all_values()
+    if not vals: return pd.DataFrame(columns=["timestamp","nombre","institucion","cuota","email","telefono","token","sede_default"])
+    df = pd.DataFrame(vals[1:], columns=vals[0])
+    return df
 
-def append_checkin_row(row_dict: dict):
-    cols = ["folio","nombre","sede","realizado_en"]
-    ws = sh.worksheet(CHK_WS)
-    ws.append_row([row_dict.get(c,"") for c in cols], value_input_option="USER_ENTERED")
+def df_checkins():
+    _, w_chk = get_worksheets()
+    vals = w_chk.get_all_values()
+    if not vals: return pd.DataFrame(columns=["timestamp","token","sede","origen"])
+    df = pd.DataFrame(vals[1:], columns=vals[0])
+    return df
 
-def full_sync_to_sheets(conn):
-    ws_a = sh.worksheet(ATT_WS)
-    ws_c = sh.worksheet(CHK_WS)
-    df_a = pd.read_sql_query(
-        "SELECT folio, nombre, institucion, tipo_cuota, email, telefono, registrado_en, qr_token FROM attendees ORDER BY id",
-        conn
+def add_attendee(nombre, institucion, cuota, email, telefono, sede_default):
+    token = str(uuid.uuid4())
+    w_att, _ = get_worksheets()
+    w_att.append_row([
+        datetime.now().isoformat(timespec="seconds"),
+        nombre, institucion, cuota, email, telefono, token, sede_default
+    ])
+    return token
+
+def record_checkin(token, sede, origen="url"):
+    _, w_chk = get_worksheets()
+    w_chk.append_row([datetime.now().isoformat(timespec="seconds"), token, sede, origen])
+
+def attendee_by_token(token):
+    df = df_attendees()
+    if df.empty: return None
+    hit = df[df["token"] == token]
+    if hit.empty: return None
+    return hit.iloc[0].to_dict()
+
+def has_checkin(token):
+    d = df_checkins()
+    if d.empty: return False
+    return any(d["token"] == token)
+
+def build_verify_url(token, sede):
+    base = st.session_state.get("base_url", DEFAULT_BASE_URL)
+    return f"{base}/?token={token}&sede={sede}"
+
+def qr_img_bytes(url: str) -> bytes:
+    img = qrcode.make(url)
+    buf = io.BytesIO()
+    img.save(buf, format="PNG")
+    return buf.getvalue()
+
+def big_result_box(txt: str, color: str):
+    st.markdown(
+        f"""
+        <div style="
+            border-radius:16px;padding:24px;
+            background:{color};color:white;
+            font-size:22px;font-weight:800;text-align:center;">
+            {txt}
+        </div>
+        """,
+        unsafe_allow_html=True
     )
-    df_c = pd.read_sql_query(
-        "SELECT a.folio, a.nombre, c.sede, c.realizado_en "
-        "FROM checkins c JOIN attendees a ON a.id=c.attendee_id ORDER BY c.id",
-        conn
-    )
-    ws_a.clear(); ws_c.clear()
-    if not df_a.empty:
-        set_with_dataframe(ws_a, df_a)
-    if not df_c.empty:
-        set_with_dataframe(ws_c, df_c)
 
-# ============================
-# INICIO DE APP
-# ============================
-init_db()
-conn = get_conn()
+# ==========================
+# ENCABEZADO
+# ==========================
+col_logo, col_title = st.columns([1,3], gap="large")
+with col_logo:
+    if os.path.exists(LOGO_PATH):
+        st.image(LOGO_PATH, width=140)
+with col_title:
+    st.title("Primer Encuentro Internacional de Guías de Turistas en Chiapas")
+    st.subheader("14–16 de noviembre de 2025")
+    st.caption("Saberes que unen, culturas que inspiran. • Colegio de Guías de Turistas de Chiapas A.C.")
 
-# ============================
-# VERIFICACIÓN POR URL (QR)
-# ============================
-params = st.query_params
-if "token" in params:
-    token = params.get("token")
-    sede = params.get("sede", ["Holiday Inn Tuxtla (Día 1)"])[0]
-    rec = find_attendee_by_token(conn, token)
-    if not rec:
-        big_status("❌ QR inválido o no encontrado", DANGER_COLOR)
+# ==========================
+# VERIFICACIÓN POR URL (modo pantalla grande para el staff)
+# ==========================
+qp = st.experimental_get_query_params()
+if "token" in qp:
+    token = qp.get("token", [""])[0].strip()
+    sede  = qp.get("sede",  [""])[0].strip() or "Sede general"
+    st.markdown("---")
+    st.header("Verificación de acceso")
+    att = attendee_by_token(token)
+    if not att:
+        big_result_box("❌ QR inválido / token no encontrado", "#b91c1c")
         st.stop()
-    checks = get_checkins_for_attendee(conn, rec["id"])
-    already_here = (not checks[checks["sede"] == sede].empty) if not checks.empty else False
-    if not already_here:
-        add_checkin(conn, rec["id"], sede)
-        try:
-            append_checkin_row({
-                "folio": rec["folio"],
-                "nombre": rec["nombre"],
-                "sede": sede,
-                "realizado_en": datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-            })
-        except Exception as e:
-            st.warning(f"No se pudo enviar el check-in a Sheets: {e}")
-        big_status("✅ Verificado • Acceso concedido", SUCCESS_COLOR)
-    else:
-        big_status("🟡 Ya registrado en esta sede", WARNING_COLOR)
-    st.write("**Asistente:**", rec["nombre"])
-    st.write("**Folio:**", rec["folio"])
-    st.write("**Tipo de cuota:**", rec["tipo_cuota"])
-    st.write("**Sede:**", sede)
+
+    if has_checkin(token):
+        big_result_box("🟡 Ya registrado anteriormente", "#d97706")
+        st.write(f"**Nombre:** {att['nombre']}")
+        st.write(f"**Cuota:** {att['cuota']}")
+        st.stop()
+
+    # marcar check-in
+    record_checkin(token, sede, origen="url")
+    big_result_box("🟢 Acceso verificado", "#15803d")
+    st.write(f"**Nombre:** {att['nombre']}")
+    st.write(f"**Cuota:** {att['cuota']}")
     st.stop()
 
-# ============================
-# PESTAÑAS PRINCIPALES
-# ============================
+# ==========================
+# TABS
+# ==========================
 tabs = st.tabs(["📝 Registro", "📊 Reportes", "⚙️ Ajustes", "🛡️ Staff"])
 
-# ---- Registro ----
+# --------------------------
+# REGISTRO
+# --------------------------
 with tabs[0]:
     st.subheader("Registrar nuevo asistente")
-    base_url = get_setting(conn, "base_url", DEFAULT_BASE_URL)
-    st.info(f"Base URL actual para generar QR: {base_url}")
+    st.info(f"Base URL actual para generar QR: {st.session_state.get('base_url', DEFAULT_BASE_URL)}")
 
-    with st.form("registro_form"):
-        cols = st.columns(2)
-        nombre = cols[0].text_input("Nombre completo *")
-        institucion = cols[1].text_input("Institución / Empresa")
-        cols2 = st.columns(3)
-        tipo_cuota = cols2[0].selectbox(
-            "Tipo de cuota",
-            ["Guía Chiapas", "Público general", "Estudiante", "Ponente", "Invitado especial"]
-        )
-        email = cols2[1].text_input("Email")
-        telefono = cols2[2].text_input("Teléfono")
-        sede_default = st.selectbox(
-            "Sede por defecto para el check-in vía URL",
-            ["Holiday Inn Tuxtla (Día 1)", "Ex Convento Santo Domingo (Día 2)", "Museo de los Altos (Día 3)"]
-        )
-        submitted = st.form_submit_button("Registrar")
+    c1, c2 = st.columns(2)
+    with c1:
+        nombre = st.text_input("Nombre completo *", key="reg_nombre")
+        instit = st.text_input("Institución / Empresa", key="reg_inst")
+        cuota  = st.selectbox("Tipo de cuota", ["Guía Chiapas", "Público general", "Estudiante"], key="reg_cuota")
+    with c2:
+        email = st.text_input("Email", key="reg_email")
+        tel   = st.text_input("Teléfono", key="reg_tel")
 
-    if submitted:
+    sede_default = st.selectbox("Sede por defecto para el check-in vía URL",
+                                ["Holiday Inn Tuxtla (Día 1)",
+                                 "Ex Convento Santo Domingo (Día 2)",
+                                 "Museo de los Altos (Día 3)"],
+                                 key="reg_sede_def")
+
+    if st.button("Registrar", type="primary", key="btn_registrar"):
         if not nombre.strip():
-            st.error("Por favor ingresa el nombre completo.")
+            st.warning("El nombre es obligatorio.")
         else:
-            folio, token = add_attendee(conn, {
-                "nombre": nombre.strip(),
-                "institucion": institucion.strip(),
-                "tipo_cuota": tipo_cuota,
-                "email": email.strip(),
-                "telefono": telefono.strip(),
-            })
-            qr_url = f"{base_url}/?token={token}&sede={sede_default}"
-            img = generate_qr_image(qr_url)
-            buf = io.BytesIO()
-            img.save(buf, format="PNG")
-            st.success(f"Registro exitoso. Folio: {folio}")
-            st.image(buf.getvalue(), caption=f"QR de {nombre}", width=220)
-            st.code(qr_url, language="text")
-            st.download_button("Descargar QR (PNG)", data=buf.getvalue(),
-                               file_name=f"{folio}.png", mime="image/png")
-            # ---- enviar a Sheets ----
-            try:
-                append_attendee_row({
-                    "folio": folio,
-                    "nombre": nombre.strip(),
-                    "institucion": institucion.strip(),
-                    "tipo_cuota": tipo_cuota,
-                    "email": email.strip(),
-                    "telefono": telefono.strip(),
-                    "registrado_en": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
-                    "qr_token": token
-                })
-            except Exception as e:
-                st.warning(f"No se pudo enviar a Sheets en este momento: {e}")
+            token = add_attendee(nombre.strip(), instit.strip(), cuota, email.strip(), tel.strip(), sede_default)
+            url = build_verify_url(token, sede_default)
+            st.success("¡Registro guardado!")
+            st.write("URL de verificación / QR:")
+            st.code(url, language="text")
+            st.download_button("Descargar QR", qr_img_bytes(url), file_name=f"qr_{nombre}.png", mime="image/png")
 
     st.divider()
-    st.subheader("Listado rápido (últimos 50)")
-    df = pd.read_sql_query(
-        "SELECT folio, nombre, institucion, tipo_cuota, email, telefono, registrado_en "
-        "FROM attendees ORDER BY id DESC LIMIT 50", conn)
-    st.dataframe(df, use_container_width=True)
-         
+    st.subheader("Listado (vista rápida)")
+    df = df_attendees()
+    st.dataframe(df, use_container_width=True, height=320)
 
-# ---- Staff (v4: múltiples estrategias de arranque iOS) ----
+# --------------------------
+# REPORTES
+# --------------------------
+with tabs[1]:
+    st.subheader("Reportes")
+    dfa = df_attendees()
+    dfc = df_checkins()
+
+    colA, colB, colC = st.columns(3)
+    colA.metric("Asistentes registrados", len(dfa))
+    colB.metric("Check-ins realizados", len(dfc))
+    pct = 0 if len(dfa)==0 else round(100*len(dfc)/len(dfa),1)
+    colC.metric("% Asistencia", f"{pct}%")
+
+    st.markdown("#### Detalle de check-ins")
+    st.dataframe(dfc.sort_values("timestamp", ascending=False), use_container_width=True, height=320)
+
+# --------------------------
+# AJUSTES
+# --------------------------
+with tabs[2]:
+    st.subheader("Ajustes")
+    base = st.text_input("Base URL del sistema (para generar/verificar QR)", value=st.session_state.get("base_url", DEFAULT_BASE_URL), key="base_url_input")
+    if st.button("Guardar Base URL", key="btn_save_base"):
+        st.session_state["base_url"] = base.strip() or DEFAULT_BASE_URL
+        st.success(f"Base URL actualizada a: {st.session_state['base_url']}")
+    st.caption("Sugerido: tu dominio de Streamlit Cloud de esta app.")
+
+# --------------------------
+# STAFF (lector + fallback por foto)
+# --------------------------
 with tabs[3]:
     st.subheader("Modo Staff — Escaneo con cámara")
-    st.caption("Apunta la cámara al QR. Si el QR contiene la URL completa, redirige de inmediato a la verificación.")
+    st.caption("Si el lector no abre en iPhone, usa el **modo por foto** de abajo. En Android/PC el lector continuo funciona bien.")
 
-    sede_staff = st.selectbox(
+    sede_staff_live = st.selectbox(
         "Sede por defecto si el QR trae solo token (sin URL):",
         ["Holiday Inn Tuxtla (Día 1)", "Ex Convento Santo Domingo (Día 2)", "Museo de los Altos (Día 3)"],
-        index=0
+        index=0,
+        key="sede_staff_live"
     )
-    sede_val = sede_staff.replace('"', '\\"')
-    base_url = st.secrets.get("base_url", DEFAULT_BASE_URL)
+    sede_val_live = sede_staff_live.replace('"', '\\"')
+    base_url_live = st.session_state.get("base_url", DEFAULT_BASE_URL)
 
-    scanner_html = f"""
-    <div style="display:flex;gap:16px;flex-wrap:wrap;align-items:flex-start">
-      <div style="max-width:380px;">
-        <div id="reader" style="width:360px;height:360px;border:1px solid #e5e7eb;border-radius:10px;display:flex;align-items:center;justify-content:center;color:#6b7280">
-          <div style="text-align:center">
-            <div style='margin-bottom:10px;'>Pulsa para iniciar el escaneo</div>
-            <button id="startBtn" style="padding:12px 16px;border-radius:12px;border:0;background:#2563eb;color:#fff;font-weight:800">Iniciar escaneo</button>
-          </div>
-        </div>
-        <div style="margin-top:6px">
-          <button id="stopBtn" disabled style="padding:8px 12px;border-radius:10px;border:1px solid #d1d5db;background:#fff">Detener</button>
-        </div>
-      </div>
-      <div style="flex:1;min-width:260px;">
-        <div id="log" style="font-size:14px;white-space:pre-wrap;color:#374151"></div>
-      </div>
-    </div>
-
-    <script src="https://unpkg.com/html5-qrcode@2.3.10/minified/html5-qrcode.min.js"></script>
-    <script>
-      const baseUrl = "{base_url}";
-      const sedeDef = "{sede_val}";
-      let html5Qr = null;
-      let running = false;
-
-      function addLog(msg) {{
-        const el = document.getElementById("log");
-        el.innerText = (el.innerText ? el.innerText + "\\n" : "") + msg;
-      }}
-
-      function buildUrlFromToken(token) {{
-        return baseUrl + "/?token=" + encodeURIComponent(token) + "&sede=" + encodeURIComponent(sedeDef);
-      }}
-
-      function onDecode(text) {{
-        try {{
-          let url = /^https?:\\/\\//i.test(text) ? text.trim() : buildUrlFromToken(text.trim());
-          addLog("✅ QR: " + text + "\\n→ " + url);
-          if (running && html5Qr) {{
-            html5Qr.stop().catch(()=>{{}}).finally(()=>{{ running=false; }});
-          }}
-          window.location.href = url;
-        }} catch (e) {{
-          addLog("❌ Error procesando QR: " + e);
-        }}
-      }}
-
-      async function startWithConstraints(constraints, label) {{
-        addLog("• Intentando: " + label);
-        try {{
-          document.getElementById("reader").innerHTML = "";
-          html5Qr = new Html5Qrcode("reader", /* verbose= */ false);
-          await html5Qr.start(
-            constraints,
-            {{
-              fps: 12,
-              qrbox: {{ width: 260, height: 260 }},
-              aspectRatio: 1.0,
-              disableFlip: true,
-              experimentalFeatures: {{ useBarCodeDetectorIfSupported: true }}
-            }},
-            onDecode,
-            () => {{ /* silencioso por frame */ }}
-          );
-          running = true;
-          addLog("📷 Cámara iniciada con: " + label);
-          document.getElementById("stopBtn").disabled = false;
-          return true;
-        }} catch(e) {{
-          addLog("× Falló (" + label + "): " + (e && e.message ? e.message : e));
-          return false;
-        }}
-      }}
-
-      async function startScanner() {{
-        document.getElementById("stopBtn").disabled = true;
-        // 1) listar cámaras tras gesto del usuario
-        let cams = [];
-        try {{ cams = await Html5Qrcode.getCameras(); }} catch(e) {{
-          addLog("× No se pudieron listar cámaras: " + e);
-        }}
-
-        // 1) deviceId (trasera si existe)
-        if (cams && cams.length) {{
-          let camId = cams[0].id;
-          const back = cams.find(d => /back|rear|environment/i.test(d.label));
-          if (back) camId = back.id;
-          if (await startWithConstraints({{ deviceId: {{ exact: camId }} }}, "deviceId exact (trasera si hay)")) return;
-        }}
-
-        // 2) facingMode exact environment
-        if (await startWithConstraints({{ facingMode: {{ exact: "environment" }} }}, "facingMode exact environment")) return;
-
-        // 3) facingMode ideal environment
-        if (await startWithConstraints({{ facingMode: {{ ideal: "environment" }} }}, "facingMode ideal environment")) return;
-
-        // 4) último recurso: frontal
-        await startWithConstraints({{ facingMode: "user" }}, "facingMode user");
-      }}
-
-      document.getElementById("startBtn").addEventListener("click", startScanner);
-      document.getElementById("stopBtn").addEventListener("click", () => {{
-        if (running && html5Qr) {{
-          html5Qr.stop().catch(()=>{{}}).finally(()=>{{ running=false; document.getElementById("stopBtn").disabled = true; addLog("⏹️ Cámara detenida"); }});
-        }}
-      }});
-    </script>
-    """
-
-    components.html(scanner_html, height=680, scrolling=False)
-
-    st.divider()
-    st.markdown("### 🔍 Diagnóstico rápido (preview sin escanear)")
-    diag_html = """
-    <video id="videoTest" autoplay playsinline style="width:100%;max-width:360px;border-radius:8px;background:#000"></video>
-    <div id="diagMsg" style="font-size:14px;color:#6b7280;margin-top:6px"></div>
-    <script>
-      const msg = document.getElementById('diagMsg');
-      navigator.mediaDevices.getUserMedia({ video: { facingMode: { ideal: "environment" } } })
-      .then(stream => { document.getElementById('videoTest').srcObject = stream; msg.innerText = "Preview activo"; })
-      .catch(e => { msg.innerText = "❌ " + e.message; });
-    </script>
-    """
-    components.html(diag_html, height=420)
-
-    st.divider()
-    st.markdown("### Alternativa manual")
-    manual_token = st.text_input("Pega aquí el token o la URL completa del QR")
-    if st.button("Verificar manualmente"):
-        if manual_token.strip():
-            if manual_token.strip().lower().startswith("http"):
-                st.markdown(f"[Ir a verificación]({manual_token.strip()})")
-            else:
-                url = f"{base_url}/?token={manual_token.strip()}&sede={sede_staff}"
-                st.markdown(f"[Ir a verificación]({url})")
-        else:
-            st.warning("Ingresa un token o URL.")
-
-# ---- Staff (v5: carga robusta de html5-qrcode en iOS) ----
-with tabs[3]:
-    st.subheader("Modo Staff — Escaneo con cámara")
-    st.caption("Si el lector no abre, usa el modo por foto más abajo (compatibilidad iPhone).")
-
-    sede_staff = st.selectbox(
-        "Sede por defecto si el QR trae solo token (sin URL):",
-        ["Holiday Inn Tuxtla (Día 1)", "Ex Convento Santo Domingo (Día 2)", "Museo de los Altos (Día 3)"],
-        index=0
-    )
-    sede_val = sede_staff.replace('"', '\\"')
-    base_url = st.secrets.get("base_url", DEFAULT_BASE_URL)
-
+    # Lector continuo: carga robusta de html5-qrcode + arranque con botón (iOS)
     scanner_html = f"""
     <div style="display:flex;gap:16px;flex-wrap:wrap;align-items:flex-start">
       <div style="max-width:380px;">
@@ -523,7 +269,7 @@ with tabs[3]:
     </div>
 
     <script>
-      // 1) Cargar librería desde CDNJS (más estable en iOS)
+      // Cargar librería desde CDNJS (iOS-friendly) y habilitar botón cuando esté lista
       (function loadLib(){{
         var s = document.createElement('script');
         s.src = "https://cdnjs.cloudflare.com/ajax/libs/html5-qrcode/2.3.10/html5-qrcode.min.js";
@@ -531,16 +277,16 @@ with tabs[3]:
         s.onload = function(){{
           document.getElementById('status').innerText = "Lector listo. Pulsa Iniciar escaneo.";
           var btn = document.getElementById('startBtn');
-          btn.disabled = false; btn.style.background = "#2563eb";
+          btn.disabled = false; btn.style.background = "{PRIMARY_COLOR}";
         }};
         s.onerror = function(){{
-          document.getElementById('status').innerText = "❌ No se pudo cargar la librería. Reintenta recargar.";
+          document.getElementById('status').innerText = "❌ No se pudo cargar la librería. Recarga la página.";
         }};
         document.head.appendChild(s);
       }})();
 
-      const baseUrl = "{base_url}";
-      const sedeDef = "{sede_val}";
+      const baseUrl = "{base_url_live}";
+      const sedeDef = "{sede_val_live}";
       let html5Qr = null;
       let running = false;
 
@@ -555,8 +301,9 @@ with tabs[3]:
 
       function onDecode(text){{
         try {{
-          let url = /^https?:\\/\\//i.test(text) ? text.trim() : buildUrlFromToken(text.trim());
-          addLog("✅ QR: " + text + "\\n→ " + url);
+          let t = (text||"").trim();
+          let url = /^https?:\\/\\//i.test(t) ? t : buildUrlFromToken(t);
+          addLog("✅ QR: " + t + "\\n→ " + url);
           if (running && html5Qr) {{
             html5Qr.stop().catch(()=>{{}}).finally(()=>{{ running=false; }});
           }}
@@ -566,31 +313,25 @@ with tabs[3]:
         }}
       }}
 
-      function waitForLib(timeoutMs){{
-        return new Promise((resolve, reject)=>{{
+      function waitForLib(ms) {{
+        return new Promise((res, rej) => {{
           const t0 = Date.now();
           (function check(){{
-            if (window.Html5Qrcode && window.Html5QrcodeScanner) return resolve();
-            if (Date.now() - t0 > timeoutMs) return reject(new Error("html5-qrcode no disponible"));
+            if (window.Html5Qrcode) return res();
+            if (Date.now() - t0 > ms) return rej(new Error("html5-qrcode no disponible"));
             setTimeout(check, 100);
           }})();
         }});
       }}
 
-      async function startWithConstraints(constraints, label){{
+      async function startWith(constraints, label){{
         addLog("• Intentando: " + label);
         try {{
           document.getElementById("reader").innerHTML = "";
-          html5Qr = new Html5Qrcode("reader", /* verbose= */ false);
+          html5Qr = new Html5Qrcode("reader", false);
           await html5Qr.start(
             constraints,
-            {{
-              fps: 12,
-              qrbox: {{ width: 260, height: 260 }},
-              aspectRatio: 1.0,
-              disableFlip: true,
-              experimentalFeatures: {{ useBarCodeDetectorIfSupported: true }}
-            }},
+            {{ fps: 12, qrbox: {{ width: 260, height: 260 }}, aspectRatio: 1.0, disableFlip: true }},
             onDecode,
             () => {{}}
           );
@@ -607,31 +348,23 @@ with tabs[3]:
       async function startScanner(){{
         document.getElementById('status').innerText = "Abriendo cámara…";
         document.getElementById('startBtn').disabled = true;
-
-        try {{
-          // 2) Esperar a que la librería exista (clave en iOS)
-          await waitForLib(4000);
-        }} catch(e){{
+        try {{ await waitForLib(4000); }} catch(e) {{
           addLog("× Librería no lista: " + e.message);
           document.getElementById('startBtn').disabled = false;
           return;
         }}
-
-        // 3) Estrategias de arranque
         let cams = [];
-        try {{ cams = await Html5Qrcode.getCameras(); }} catch(e) {{
-          addLog("× No se pudieron listar cámaras: " + e);
-        }}
+        try {{ cams = await Html5Qrcode.getCameras(); }} catch(e) {{ addLog("× No se pudieron listar cámaras: " + e); }}
 
         if (cams && cams.length){{
           let camId = cams[0].id;
           const back = cams.find(d=>/back|rear|environment/i.test(d.label));
           if (back) camId = back.id;
-          if (await startWithConstraints({{ deviceId: {{ exact: camId }} }}, "deviceId exact (trasera si hay)")) return;
+          if (await startWith({{ deviceId: {{ exact: camId }} }}, "deviceId exact (trasera si hay)")) return;
         }}
-        if (await startWithConstraints({{ facingMode: {{ exact: "environment" }} }}, "facingMode exact environment")) return;
-        if (await startWithConstraints({{ facingMode: {{ ideal: "environment" }} }}, "facingMode ideal environment")) return;
-        await startWithConstraints({{ facingMode: "user" }}, "facingMode user");
+        if (await startWith({{ facingMode: {{ exact: "environment" }} }}, "facingMode exact environment")) return;
+        if (await startWith({{ facingMode: {{ ideal: "environment" }} }}, "facingMode ideal environment")) return;
+        await startWith({{ facingMode: "user" }}, "facingMode user");
       }}
 
       document.getElementById("startBtn").addEventListener("click", startScanner);
@@ -646,8 +379,7 @@ with tabs[3]:
       }});
     </script>
     """
-
-    components.html(scanner_html, height=700, scrolling=False)
+    components.html(scanner_html, height=700, scrolling=False, key="scanner_live")
 
     st.divider()
     st.markdown("### 🔍 Diagnóstico rápido (preview sin escanear)")
@@ -661,10 +393,20 @@ with tabs[3]:
       .catch(e => { msg.innerText = "❌ " + e.message; });
     </script>
     """
-    components.html(diag_html, height=420)
+    components.html(diag_html, height=420, key="diag_preview")
 
     st.divider()
-    st.markdown("### 🖼️ Modo por foto (100% compatible iPhone)")
+    st.subheader("Modo Staff — Escaneo por foto (compatibilidad iPhone)")
+    st.caption("Toma una foto del QR. Decodificamos en el navegador y te enviamos a la verificación.")
+    sede_staff_photo = st.selectbox(
+        "Sede por defecto si el QR trae solo token (sin URL):",
+        ["Holiday Inn Tuxtla (Día 1)", "Ex Convento Santo Domingo (Día 2)", "Museo de los Altos (Día 3)"],
+        index=0,
+        key="sede_staff_photo"
+    )
+    sede_val_photo = sede_staff_photo.replace('"', '\\"')
+    base_url_photo = st.session_state.get("base_url", DEFAULT_BASE_URL)
+
     html_photo = f"""
     <input id="qrFile" type="file" accept="image/*" capture="environment"
            style="padding:12px;border:1px solid #e5e7eb;border-radius:12px;width:100%;max-width:420px">
@@ -672,9 +414,9 @@ with tabs[3]:
     <canvas id="qrCanvas" style="display:none"></canvas>
     <script src="https://cdn.jsdelivr.net/npm/jsqr@1.4.0/dist/jsQR.js"></script>
     <script>
-      const baseUrl = "{base_url}";
-      const sedeDef = "{sede_val}";
-      function toUrl(t){{ return /^https?:\\/\\//i.test(t) ? t : baseUrl + "/?token=" + encodeURIComponent(t) + "&sede=" + encodeURIComponent(sedeDef); }}
+      const baseUrlP = "{base_url_photo}";
+      const sedeDefP = "{sede_val_photo}";
+      function toUrl(t){{ return /^https?:\\/\\//i.test(t) ? t : baseUrlP + "/?token=" + encodeURIComponent(t) + "&sede=" + encodeURIComponent(sedeDefP); }}
       document.getElementById("qrFile").addEventListener("change", (ev) => {{
         const f = ev.target.files && ev.target.files[0]; if (!f) return;
         const img = new Image(); const url = URL.createObjectURL(f);
@@ -696,51 +438,8 @@ with tabs[3]:
       }});
     </script>
     """
-    components.html(html_photo, height=180, scrolling=False)
+    components.html(html_photo, height=180, scrolling=False, key="scanner_photo")
 
-
-# ---- Reportes ----
-with tabs[1]:
-    st.subheader("Reportes y exportación")
-    c1, c2 = st.columns(2)
-
-    with c1:
-        st.caption("Asistentes registrados")
-        df_a = pd.read_sql_query(
-            "SELECT folio, nombre, institucion, tipo_cuota, email, telefono, registrado_en "
-            "FROM attendees ORDER BY id DESC", conn)
-        st.dataframe(df_a, use_container_width=True)
-        st.download_button("Descargar asistentes (CSV)",
-                           data=df_a.to_csv(index=False).encode("utf-8"),
-                           file_name="asistentes.csv", mime="text/csv")
-
-    with c2:
-        st.caption("Check-ins realizados")
-        df_c = pd.read_sql_query(
-            "SELECT c.id, a.folio, a.nombre, c.sede, c.realizado_en "
-            "FROM checkins c JOIN attendees a ON a.id=c.attendee_id ORDER BY c.id DESC", conn)
-        st.dataframe(df_c, use_container_width=True)
-        st.download_button("Descargar check-ins (CSV)",
-                           data=df_c.to_csv(index=False).encode("utf-8"),
-                           file_name="checkins.csv", mime="text/csv")
-
-# ---- Ajustes ----
-with tabs[2]:
-    st.subheader("Ajustes de la app")
-    base_url_current = get_setting(conn, "base_url", DEFAULT_BASE_URL)
-    new_url = st.text_input("Base URL para generar los QR (incluye https://)", value=base_url_current)
-    if st.button("Guardar Base URL"):
-        if new_url.startswith("http"):
-            set_setting(conn, "base_url", new_url.strip())
-            st.success("Base URL actualizada.")
-        else:
-            st.error("La URL debe iniciar con http o https.")
-
-    st.markdown("—")
-    st.caption("Sincronización con Google Sheets")
-    if st.button("Subir TODO el histórico a Sheets"):
-        try:
-            full_sync_to_sheets(conn)
-            st.success("Sincronización completa realizada.")
-        except Exception as e:
-            st.error(f"Error al sincronizar: {e}")
+# ==========================
+# FIN
+# ==========================
