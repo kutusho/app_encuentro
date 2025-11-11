@@ -340,7 +340,7 @@ with tabs[0]:
     st.dataframe(df, use_container_width=True)
          
 
-# ---- Staff (v2: inicia con clic para iOS) ----
+# ---- Staff (v3: botón de inicio + diagnóstico iOS) ----
 with tabs[3]:
     st.subheader("Modo Staff — Escaneo con cámara")
     st.caption("Apunta la cámara al QR. Si el QR contiene la URL completa, redirige de inmediato a la verificación.")
@@ -350,7 +350,6 @@ with tabs[3]:
         ["Holiday Inn Tuxtla (Día 1)", "Ex Convento Santo Domingo (Día 2)", "Museo de los Altos (Día 3)"],
         index=0
     )
-
     sede_val = sede_staff.replace('"', '\\"')
     base_url = st.secrets.get("base_url", DEFAULT_BASE_URL)
 
@@ -358,13 +357,13 @@ with tabs[3]:
     <div style="display:flex;gap:16px;flex-wrap:wrap;align-items:flex-start">
       <div style="max-width:380px;">
         <div id="reader" style="width:360px;height:360px;border:1px solid #e5e7eb;border-radius:10px;display:flex;align-items:center;justify-content:center;color:#6b7280">
-          <div>
-            <div style='text-align:center;margin-bottom:10px;'>Listo para escanear</div>
-            <button id="startBtn" style="padding:10px 14px;border-radius:10px;border:0;background:#2563eb;color:#fff;font-weight:700">Iniciar escaneo</button>
+          <div style="text-align:center">
+            <div style='margin-bottom:10px;'>Pulsa para iniciar el escaneo</div>
+            <button id="startBtn" style="padding:12px 16px;border-radius:12px;border:0;background:#2563eb;color:#fff;font-weight:800">Iniciar escaneo</button>
           </div>
         </div>
         <p style="margin-top:10px;color:#555;font-family:system-ui,-apple-system,Segoe UI,Roboto,Ubuntu,Cantarell,Noto Sans,Helvetica,Arial;">
-          Si no aparece la vista previa, toca el botón <b>Iniciar escaneo</b> y confirma el permiso de cámara. En iPhone: icono <b>aA</b> → <b>Website Settings</b> → <b>Camera: Allow</b>.
+          iPhone (Safari): si no ves la cámara, toca <b>aA</b> → <b>Website Settings</b> → <b>Camera: Allow</b>. Luego vuelve a pulsar <b>Iniciar escaneo</b>.
         </p>
       </div>
       <div style="flex:1;min-width:260px;">
@@ -372,45 +371,49 @@ with tabs[3]:
       </div>
     </div>
 
+    <!-- Librería correcta (minificada) -->
     <script src="https://unpkg.com/html5-qrcode@2.3.10/minified/html5-qrcode.min.js"></script>
     <script>
       const baseUrl = "{base_url}";
       const sedeDef = "{sede_val}";
+      let html5Qr = null;
 
       function buildUrlFromToken(token) {{
         return baseUrl + "/?token=" + encodeURIComponent(token) + "&sede=" + encodeURIComponent(sedeDef);
+      }}
+
+      function log(msg) {{
+        const el = document.getElementById("last-result");
+        el.innerText = (el.innerText ? el.innerText + "\\n" : "") + msg;
       }}
 
       function safeRedirect(decodedText) {{
         try {{
           let txt = (decodedText || "").trim();
           let url = /^https?:\\/\\//i.test(txt) ? txt : buildUrlFromToken(txt);
-          document.getElementById("last-result").innerText = "QR leído:\\n" + txt + "\\n\\nAbriendo: " + url;
+          log("QR leído: " + txt + "\\nAbriendo: " + url);
           window.location.href = url;
         }} catch (e) {{
-          document.getElementById("last-result").innerText = "Error procesando QR: " + e;
+          log("❌ Error procesando QR: " + e);
           console.error(e);
         }}
       }}
 
-      const readerDiv = document.getElementById("reader");
-      const startBtn = document.getElementById("startBtn");
-      let html5Qr = null;
-
       async function startScanner() {{
         try {{
-          // Enumerar cámaras tras un gesto del usuario (requerido por iOS)
-          const devices = await Html5Qrcode.getCameras();
-          if (!devices || devices.length === 0) {{
-            document.getElementById("last-result").innerText = "❌ No se detectaron cámaras en el dispositivo.";
+          // Necesita gesto del usuario en iOS, por eso lo llamamos desde el botón
+          const list = await Html5Qrcode.getCameras();
+          if (!list || list.length === 0) {{
+            log("❌ No se detectaron cámaras.");
             return;
           }}
-          // Elegir la trasera si existe
-          let camId = devices[0].id;
-          const back = devices.find(d => /back|rear|environment/i.test(d.label));
+          // Preferir cámara trasera si existe
+          let camId = list[0].id;
+          const back = list.find(d => /back|rear|environment/i.test(d.label));
           if (back) camId = back.id;
 
-          readerDiv.innerHTML = ""; // limpiar placeholder
+          // limpiar placeholder e iniciar
+          document.getElementById("reader").innerHTML = "";
           html5Qr = new Html5Qrcode("reader", /* verbose= */ false);
 
           await html5Qr.start(
@@ -419,33 +422,40 @@ with tabs[3]:
               fps: 12,
               qrbox: {{ width: 260, height: 260 }},
               aspectRatio: 1.0,
-              experimentalFeatures: {{
-                useBarCodeDetectorIfSupported: true
-              }}
+              experimentalFeatures: {{ useBarCodeDetectorIfSupported: true }}
             }},
-            (decodedText, decodedResult) => {{
-              // Éxito: detener y redirigir
+            (decodedText) => {{
               html5Qr.stop().catch(()=>{{}});
               safeRedirect(decodedText);
             }},
-            (errorMsg) => {{
-              // Errores de escaneo; no hacer ruido por cada frame
-            }}
+            (scanError) => {{ /* silencioso por frame */ }}
           );
+          log("📷 Cámara iniciada. Apunta al QR.");
         }} catch (e) {{
-          // Mensaje de diagnóstico visible
-          document.getElementById("last-result").innerText = "❌ No se pudo iniciar la cámara: " + (e && e.message ? e.message : e);
+          log("❌ No se pudo iniciar la cámara: " + (e && e.message ? e.message : e));
           console.error(e);
         }}
       }}
 
-      startBtn.addEventListener("click", () => {{
-        startScanner();
-      }});
+      document.getElementById("startBtn").addEventListener("click", startScanner);
     </script>
     """
 
     components.html(scanner_html, height=640, scrolling=False)
+
+    st.divider()
+    st.markdown("### 🔍 Diagnóstico rápido (preview sin escanear)")
+    diag_html = """
+    <video id="videoTest" autoplay playsinline style="width:100%;max-width:360px;border-radius:8px;background:#000"></video>
+    <div id="diagMsg" style="font-size:14px;color:#6b7280;margin-top:6px"></div>
+    <script>
+      const msg = document.getElementById('diagMsg');
+      navigator.mediaDevices.getUserMedia({ video: { facingMode: { ideal: "environment" } } })
+      .then(stream => { document.getElementById('videoTest').srcObject = stream; msg.innerText = "Preview activo"; })
+      .catch(e => { msg.innerText = "❌ " + e.message; });
+    </script>
+    """
+    components.html(diag_html, height=420)
 
     st.divider()
     st.markdown("### Alternativa manual")
@@ -459,7 +469,6 @@ with tabs[3]:
                 st.markdown(f"[Ir a verificación]({url})")
         else:
             st.warning("Ingresa un token o URL.")
-
 
 
 # ---- Reportes ----
