@@ -491,6 +491,89 @@ with tabs[3]:
         else:
             st.warning("Ingresa un token o URL.")
 
+# ---- Staff (fallback iPhone: escaneo por foto con jsQR) ----
+with tabs[3]:
+    st.subheader("Modo Staff — Escaneo por foto (compatibilidad iPhone)")
+    st.caption("Toma una foto del QR. Decodificamos y te enviamos a la verificación. Funciona incluso si el lector continuo no abre el visor en iOS.")
+
+    sede_staff = st.selectbox(
+        "Sede por defecto si el QR trae solo token (sin URL):",
+        ["Holiday Inn Tuxtla (Día 1)", "Ex Convento Santo Domingo (Día 2)", "Museo de los Altos (Día 3)"],
+        index=0,
+        key="sede_foto"
+    )
+    sede_val = sede_staff.replace('"', '\\"')
+    base_url = st.secrets.get("base_url", DEFAULT_BASE_URL)
+
+    html = f"""
+    <div style="display:flex;gap:16px;flex-wrap:wrap;align-items:flex-start">
+      <div style="max-width:420px;">
+        <input id="qrFile" type="file" accept="image/*" capture="environment"
+               style="padding:12px;border:1px solid #e5e7eb;border-radius:12px;width:100%">
+        <canvas id="qrCanvas" style="display:none"></canvas>
+        <div id="result" style="margin-top:10px;font-family:system-ui,-apple-system,Segoe UI,Roboto,Ubuntu,Cantarell,Noto Sans,Helvetica,Arial;"></div>
+      </div>
+      <div style="flex:1;min-width:260px;color:#374151;font-size:14px;white-space:pre-wrap" id="log"></div>
+    </div>
+
+    <!-- jsQR para decodificar QR en imágenes -->
+    <script src="https://cdn.jsdelivr.net/npm/jsqr@1.4.0/dist/jsQR.js"></script>
+    <script>
+      const baseUrl = "{base_url}";
+      const sedeDef = "{sede_val}";
+
+      function log(msg) {{
+        const el = document.getElementById("log");
+        el.innerText = (el.innerText ? el.innerText + "\\n" : "") + msg;
+      }}
+
+      function toVerifyUrl(text) {{
+        const t = (text||"").trim();
+        if (/^https?:\\/\\//i.test(t)) return t;
+        return baseUrl + "/?token=" + encodeURIComponent(t) + "&sede=" + encodeURIComponent(sedeDef);
+      }}
+
+      document.getElementById("qrFile").addEventListener("change", async (ev) => {{
+        const file = ev.target.files && ev.target.files[0];
+        if (!file) return;
+        const img = new Image();
+        const url = URL.createObjectURL(file);
+        img.onload = () => {{
+          try {{
+            const canvas = document.getElementById("qrCanvas");
+            const ctx = canvas.getContext("2d");
+            canvas.width = img.naturalWidth;
+            canvas.height = img.naturalHeight;
+            ctx.drawImage(img, 0, 0);
+            const imageData = ctx.getImageData(0, 0, canvas.width, canvas.height);
+            const code = jsQR(imageData.data, canvas.width, canvas.height, {{ inversionAttempts: "attemptBoth" }});
+            if (code && code.data) {{
+              const dest = toVerifyUrl(code.data);
+              document.getElementById("result").innerHTML = "✅ QR leído:<br><code>" + code.data + "</code><br>Abriendo verificación…";
+              window.location.href = dest;
+            }} else {{
+              document.getElementById("result").innerHTML = "❌ No se detectó un QR claro en la foto. Intenta acercar y enfocar.";
+            }}
+          }} catch(e) {{
+            document.getElementById("result").innerHTML = "❌ Error al procesar la imagen: " + e;
+            log(e.toString());
+          }} finally {{
+            URL.revokeObjectURL(url);
+          }}
+        }};
+        img.onerror = () => {{
+          document.getElementById("result").textContent = "❌ No se pudo cargar la imagen.";
+          URL.revokeObjectURL(url);
+        }};
+        img.src = url;
+      }});
+    </script>
+    """
+    components.html(html, height=260, scrolling=False)
+
+    st.info("Sugerencia: usa este modo en iPhone. En Android/computadora puedes usar el lector continuo.")
+
+
 # ---- Reportes ----
 with tabs[1]:
     st.subheader("Reportes y exportación")
