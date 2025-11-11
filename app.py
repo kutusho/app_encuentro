@@ -139,9 +139,12 @@ with col_title:
 # VERIFICACIÓN POR URL (modo pantalla grande para el staff)
 # ==========================
 qp = st.experimental_get_query_params()
-if "token" in qp:
-    token = qp.get("token", [""])[0].strip()
-    sede  = qp.get("sede",  [""])[0].strip() or "Sede general"
+qp = st.query_params
+token = (qp.get("token") or "").strip()
+sede  = (qp.get("sede")  or "Sede general").strip()
+if token:
+    # … (deja igual el resto de la lógica de verificación)
+
     st.markdown("---")
     st.header("Verificación de acceso")
     att = attendee_by_token(token)
@@ -376,7 +379,10 @@ with tabs[3]:
       }});
     </script>
     """
-    components.html(scanner_html, height=700, scrolling=False, key="scanner_live")
+    components.html(scanner_html, height=700, scrolling=False)
+    components.html(diag_html,    height=420, scrolling=False)
+    components.html(html_photo,   height=180, scrolling=False)
+
 
     # (Debajo deja tu Diagnóstico y el Modo por foto tal como los tienes, con keys únicos)
 
