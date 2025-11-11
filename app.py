@@ -3,6 +3,9 @@ from PIL import Image
 import io, sqlite3
 from datetime import datetime
 from pathlib import Path
+import gspread
+from google.oauth2.service_account import Credentials
+from gspread_dataframe import set_with_dataframe
 EVENT_NAME="Primer Encuentro Internacional de Guías de Turistas en Chiapas"
 EVENT_DATES="14–16 de noviembre de 2025"
 EVENT_TAGLINE="Saberes que unen, culturas que inspiran."
