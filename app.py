@@ -340,7 +340,7 @@ with tabs[0]:
     st.dataframe(df, use_container_width=True)
          
 
-# ---- Staff (v3: botón de inicio + diagnóstico iOS) ----
+# ---- Staff (v4: múltiples estrategias de arranque iOS) ----
 with tabs[3]:
     st.subheader("Modo Staff — Escaneo con cámara")
     st.caption("Apunta la cámara al QR. Si el QR contiene la URL completa, redirige de inmediato a la verificación.")
@@ -362,86 +362,107 @@ with tabs[3]:
             <button id="startBtn" style="padding:12px 16px;border-radius:12px;border:0;background:#2563eb;color:#fff;font-weight:800">Iniciar escaneo</button>
           </div>
         </div>
-        <p style="margin-top:10px;color:#555;font-family:system-ui,-apple-system,Segoe UI,Roboto,Ubuntu,Cantarell,Noto Sans,Helvetica,Arial;">
-          iPhone (Safari): si no ves la cámara, toca <b>aA</b> → <b>Website Settings</b> → <b>Camera: Allow</b>. Luego vuelve a pulsar <b>Iniciar escaneo</b>.
-        </p>
+        <div style="margin-top:6px">
+          <button id="stopBtn" disabled style="padding:8px 12px;border-radius:10px;border:1px solid #d1d5db;background:#fff">Detener</button>
+        </div>
       </div>
       <div style="flex:1;min-width:260px;">
-        <div id="last-result" style="font-size:16px;white-space:pre-wrap;"></div>
+        <div id="log" style="font-size:14px;white-space:pre-wrap;color:#374151"></div>
       </div>
     </div>
 
-    <!-- Librería correcta (minificada) -->
     <script src="https://unpkg.com/html5-qrcode@2.3.10/minified/html5-qrcode.min.js"></script>
     <script>
       const baseUrl = "{base_url}";
       const sedeDef = "{sede_val}";
       let html5Qr = null;
+      let running = false;
+
+      function addLog(msg) {{
+        const el = document.getElementById("log");
+        el.innerText = (el.innerText ? el.innerText + "\\n" : "") + msg;
+      }}
 
       function buildUrlFromToken(token) {{
         return baseUrl + "/?token=" + encodeURIComponent(token) + "&sede=" + encodeURIComponent(sedeDef);
       }}
 
-      function log(msg) {{
-        const el = document.getElementById("last-result");
-        el.innerText = (el.innerText ? el.innerText + "\\n" : "") + msg;
-      }}
-
-      function safeRedirect(decodedText) {{
+      function onDecode(text) {{
         try {{
-          let txt = (decodedText || "").trim();
-          let url = /^https?:\\/\\//i.test(txt) ? txt : buildUrlFromToken(txt);
-          log("QR leído: " + txt + "\\nAbriendo: " + url);
+          let url = /^https?:\\/\\//i.test(text) ? text.trim() : buildUrlFromToken(text.trim());
+          addLog("✅ QR: " + text + "\\n→ " + url);
+          if (running && html5Qr) {{
+            html5Qr.stop().catch(()=>{{}}).finally(()=>{{ running=false; }});
+          }}
           window.location.href = url;
         }} catch (e) {{
-          log("❌ Error procesando QR: " + e);
-          console.error(e);
+          addLog("❌ Error procesando QR: " + e);
         }}
       }}
 
-      async function startScanner() {{
+      async function startWithConstraints(constraints, label) {{
+        addLog("• Intentando: " + label);
         try {{
-          // Necesita gesto del usuario en iOS, por eso lo llamamos desde el botón
-          const list = await Html5Qrcode.getCameras();
-          if (!list || list.length === 0) {{
-            log("❌ No se detectaron cámaras.");
-            return;
-          }}
-          // Preferir cámara trasera si existe
-          let camId = list[0].id;
-          const back = list.find(d => /back|rear|environment/i.test(d.label));
-          if (back) camId = back.id;
-
-          // limpiar placeholder e iniciar
           document.getElementById("reader").innerHTML = "";
           html5Qr = new Html5Qrcode("reader", /* verbose= */ false);
-
           await html5Qr.start(
-            camId,
+            constraints,
             {{
               fps: 12,
               qrbox: {{ width: 260, height: 260 }},
               aspectRatio: 1.0,
+              disableFlip: true,
               experimentalFeatures: {{ useBarCodeDetectorIfSupported: true }}
             }},
-            (decodedText) => {{
-              html5Qr.stop().catch(()=>{{}});
-              safeRedirect(decodedText);
-            }},
-            (scanError) => {{ /* silencioso por frame */ }}
+            onDecode,
+            () => {{ /* silencioso por frame */ }}
           );
-          log("📷 Cámara iniciada. Apunta al QR.");
-        }} catch (e) {{
-          log("❌ No se pudo iniciar la cámara: " + (e && e.message ? e.message : e));
-          console.error(e);
+          running = true;
+          addLog("📷 Cámara iniciada con: " + label);
+          document.getElementById("stopBtn").disabled = false;
+          return true;
+        }} catch(e) {{
+          addLog("× Falló (" + label + "): " + (e && e.message ? e.message : e));
+          return false;
         }}
       }}
 
+      async function startScanner() {{
+        document.getElementById("stopBtn").disabled = true;
+        // 1) listar cámaras tras gesto del usuario
+        let cams = [];
+        try {{ cams = await Html5Qrcode.getCameras(); }} catch(e) {{
+          addLog("× No se pudieron listar cámaras: " + e);
+        }}
+
+        // 1) deviceId (trasera si existe)
+        if (cams && cams.length) {{
+          let camId = cams[0].id;
+          const back = cams.find(d => /back|rear|environment/i.test(d.label));
+          if (back) camId = back.id;
+          if (await startWithConstraints({{ deviceId: {{ exact: camId }} }}, "deviceId exact (trasera si hay)")) return;
+        }}
+
+        // 2) facingMode exact environment
+        if (await startWithConstraints({{ facingMode: {{ exact: "environment" }} }}, "facingMode exact environment")) return;
+
+        // 3) facingMode ideal environment
+        if (await startWithConstraints({{ facingMode: {{ ideal: "environment" }} }}, "facingMode ideal environment")) return;
+
+        // 4) último recurso: frontal
+        await startWithConstraints({{ facingMode: "user" }}, "facingMode user");
+      }}
+
       document.getElementById("startBtn").addEventListener("click", startScanner);
+      document.getElementById("stopBtn").addEventListener("click", () => {{
+        if (running && html5Qr) {{
+          html5Qr.stop().catch(()=>{{}}).finally(()=>{{ running=false; document.getElementById("stopBtn").disabled = true; addLog("⏹️ Cámara detenida"); }});
+        }}
+      }});
     </script>
     """
 
-    components.html(scanner_html, height=640, scrolling=False)
+    components.html(scanner_html, height=680, scrolling=False)
 
     st.divider()
     st.markdown("### 🔍 Diagnóstico rápido (preview sin escanear)")
@@ -469,7 +490,6 @@ with tabs[3]:
                 st.markdown(f"[Ir a verificación]({url})")
         else:
             st.warning("Ingresa un token o URL.")
-
 
 # ---- Reportes ----
 with tabs[1]:
