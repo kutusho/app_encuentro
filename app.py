@@ -44,7 +44,7 @@ def get_gspread_client():
 @st.cache_resource(show_spinner=False)
 def get_worksheets():
     gc = get_gspread_client()
-    ss_id = st.secrets["sheets"]["gsheet_id"]
+    ss_id = st.secrets["sheets"].get("gsheet_id") or st.secrets["sheets"]["spreadsheet_id"]
     ws_att = st.secrets["sheets"]["attendees_ws"]
     ws_chk = st.secrets["sheets"]["checkins_ws"]
     ss = gc.open_by_key(ss_id)
@@ -138,7 +138,7 @@ with col_title:
 # ==========================
 # VERIFICACIÓN POR URL (modo pantalla grande para el staff)
 # ==========================
-qp = st.experimental_get_query_params()
+qp = st.query_params
 if "token" in qp:
     token = qp.get("token", [""])[0].strip()
     sede  = qp.get("sede",  [""])[0].strip() or "Sede general"
