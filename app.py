@@ -238,7 +238,7 @@ with tabs[2]:
 # --------------------------
 with tabs[3]:
     st.subheader("Modo Staff — Escaneo con cámara")
-    st.caption("Si el lector no abre en iPhone, usa el **modo por foto** de abajo. En Android/PC el lector continuo funciona bien.")
+    st.caption("Si en iPhone el lector no inicia, usa el **modo por foto** más abajo. En Android/PC el lector continuo funciona bien.")
 
     sede_staff_live = st.selectbox(
         "Sede por defecto si el QR trae solo token (sin URL):",
@@ -246,21 +246,32 @@ with tabs[3]:
         index=0,
         key="sede_staff_live"
     )
-    sede_val_live = sede_staff_live.replace('"', '\\"')
-    base_url_live = st.session_state.get("base_url", DEFAULT_BASE_URL)
 
-    # Lector continuo: carga robusta de html5-qrcode + arranque con botón (iOS)
+    # Variables seguras para inyectar en JS
+    base_url_live = st.session_state.get("base_url", DEFAULT_BASE_URL)
+    sede_val_live = sede_staff_live.replace('"', '\\"')
+
+    # === LECTOR CONTINUO CON SOLICITUD EXPLÍCITA DE PERMISOS ===
     scanner_html = f"""
     <div style="display:flex;gap:16px;flex-wrap:wrap;align-items:flex-start">
       <div style="max-width:380px;">
-        <div id="reader" style="width:360px;height:360px;border:1px solid #e5e7eb;border-radius:10px;display:flex;align-items:center;justify-content:center;color:#6b7280">
-          <div style="text-align:center">
-            <div id="status" style='margin-bottom:10px;'>Cargando lector…</div>
-            <button id="startBtn" disabled style="padding:12px 16px;border-radius:12px;border:0;background:#9ca3af;color:#fff;font-weight:800">Iniciar escaneo</button>
+        <div id="reader"
+             style="width:360px;height:360px;border:1px solid #e5e7eb;border-radius:10px;
+                    display:flex;align-items:center;justify-content:center;color:#6b7280;flex-direction:column;">
+          <div id="status" style="margin-bottom:10px;font-weight:600">
+            📷 El lector necesita permiso para usar la cámara.
           </div>
+          <button id="permBtn"
+                  style="padding:12px 16px;border-radius:12px;border:0;background:{PRIMARY_COLOR};
+                         color:#fff;font-weight:800">
+            Dar permiso y activar cámara
+          </button>
         </div>
         <div style="margin-top:6px">
-          <button id="stopBtn" disabled style="padding:8px 12px;border-radius:10px;border:1px solid #d1d5db;background:#fff">Detener</button>
+          <button id="stopBtn" disabled
+                  style="padding:8px 12px;border-radius:10px;border:1px solid #d1d5db;background:#fff">
+            Detener
+          </button>
         </div>
       </div>
       <div style="flex:1;min-width:260px;">
@@ -269,22 +280,6 @@ with tabs[3]:
     </div>
 
     <script>
-      // Cargar librería desde CDNJS (iOS-friendly) y habilitar botón cuando esté lista
-      (function loadLib(){{
-        var s = document.createElement('script');
-        s.src = "https://cdnjs.cloudflare.com/ajax/libs/html5-qrcode/2.3.10/html5-qrcode.min.js";
-        s.async = true;
-        s.onload = function(){{
-          document.getElementById('status').innerText = "Lector listo. Pulsa Iniciar escaneo.";
-          var btn = document.getElementById('startBtn');
-          btn.disabled = false; btn.style.background = "{PRIMARY_COLOR}";
-        }};
-        s.onerror = function(){{
-          document.getElementById('status').innerText = "❌ No se pudo cargar la librería. Recarga la página.";
-        }};
-        document.head.appendChild(s);
-      }})();
-
       const baseUrl = "{base_url_live}";
       const sedeDef = "{sede_val_live}";
       let html5Qr = null;
@@ -295,21 +290,22 @@ with tabs[3]:
         el.innerText = (el.innerText ? el.innerText + "\\n" : "") + msg;
       }}
 
-      function buildUrlFromToken(token){{
-        return baseUrl + "/?token=" + encodeURIComponent(token) + "&sede=" + encodeURIComponent(sedeDef);
-      }}
-
-      function onDecode(text){{
+      // Pide permisos primero (UX clara) y luego carga html5-qrcode
+      async function startCamera() {{
         try {{
-          let t = (text||"").trim();
-          let url = /^https?:\\/\\//i.test(t) ? t : buildUrlFromToken(t);
-          addLog("✅ QR: " + t + "\\n→ " + url);
-          if (running && html5Qr) {{
-            html5Qr.stop().catch(()=>{{}}).finally(()=>{{ running=false; }});
+          if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {{
+            document.getElementById('status').innerText =
+              "⚠️ Este navegador no soporta acceso a cámara. Usa el modo por foto.";
+            return;
           }}
-          window.location.href = url;
-        }} catch(e) {{
-          addLog("❌ Error procesando QR: " + e);
+          const stream = await navigator.mediaDevices.getUserMedia({{ video: true }});
+          // Cerrar de inmediato: solo verificamos permisos
+          stream.getTracks().forEach(t => t.stop());
+          document.getElementById('status').innerText = "✅ Permiso concedido. Cargando lector…";
+          await initScanner();
+        }} catch (err) {{
+          document.getElementById('status').innerText = "⚠️ No se concedió permiso para la cámara.";
+          addLog("Permiso denegado: " + (err && err.message ? err.message : err));
         }}
       }}
 
@@ -324,80 +320,77 @@ with tabs[3]:
         }});
       }}
 
-      async function startWith(constraints, label){{
-        addLog("• Intentando: " + label);
+      async function initScanner() {{
+        // Cargar librería
+        await new Promise((resolve, reject) => {{
+          const s = document.createElement('script');
+          s.src = "https://cdnjs.cloudflare.com/ajax/libs/html5-qrcode/2.3.10/html5-qrcode.min.js";
+          s.async = true;
+          s.onload = resolve;
+          s.onerror = () => reject(new Error("No se pudo cargar html5-qrcode"));
+          document.head.appendChild(s);
+        }});
+
         try {{
-          document.getElementById("reader").innerHTML = "";
+          await waitForLib(4000);
+          document.getElementById('status').innerText = "Lector listo. Enfoca el QR…";
+          await startScanner();
+        }} catch(e) {{
+          document.getElementById('status').innerText = "❌ Error: " + e.message;
+          addLog("Init error: " + e.message);
+        }}
+      }}
+
+      function buildUrlFromToken(t) {{
+        return /^https?:\\/\\//i.test(t)
+          ? t
+          : baseUrl + "/?token=" + encodeURIComponent(t) + "&sede=" + encodeURIComponent(sedeDef);
+      }}
+
+      async function startScanner() {{
+        try {{
           html5Qr = new Html5Qrcode("reader", false);
           await html5Qr.start(
-            constraints,
+            {{ facingMode: {{ ideal: "environment" }} }},
             {{ fps: 12, qrbox: {{ width: 260, height: 260 }}, aspectRatio: 1.0, disableFlip: true }},
-            onDecode,
+            (decodedText) => {{
+              addLog("QR leído: " + decodedText);
+              window.location.href = buildUrlFromToken(decodedText);
+            }},
             () => {{}}
           );
           running = true;
           document.getElementById("stopBtn").disabled = false;
-          addLog("📷 Cámara iniciada con: " + label);
-          return true;
-        }} catch(e) {{
-          addLog("× Falló (" + label + "): " + (e && e.message ? e.message : e));
-          return false;
+        }} catch (e) {{
+          document.getElementById('status').innerText =
+            "❌ No se pudo iniciar la cámara en este dispositivo. Usa el modo por foto (abajo).";
+          addLog("Start error: " + (e && e.message ? e.message : e));
         }}
       }}
 
-      async function startScanner(){{
-        document.getElementById('status').innerText = "Abriendo cámara…";
-        document.getElementById('startBtn').disabled = true;
-        try {{ await waitForLib(4000); }} catch(e) {{
-          addLog("× Librería no lista: " + e.message);
-          document.getElementById('startBtn').disabled = false;
-          return;
-        }}
-        let cams = [];
-        try {{ cams = await Html5Qrcode.getCameras(); }} catch(e) {{ addLog("× No se pudieron listar cámaras: " + e); }}
-
-        if (cams && cams.length){{
-          let camId = cams[0].id;
-          const back = cams.find(d=>/back|rear|environment/i.test(d.label));
-          if (back) camId = back.id;
-          if (await startWith({{ deviceId: {{ exact: camId }} }}, "deviceId exact (trasera si hay)")) return;
-        }}
-        if (await startWith({{ facingMode: {{ exact: "environment" }} }}, "facingMode exact environment")) return;
-        if (await startWith({{ facingMode: {{ ideal: "environment" }} }}, "facingMode ideal environment")) return;
-        await startWith({{ facingMode: "user" }}, "facingMode user");
-      }}
-
-      document.getElementById("startBtn").addEventListener("click", startScanner);
-      document.getElementById("stopBtn").addEventListener("click", ()=>{{
-        if (running && html5Qr){{
-          html5Qr.stop().catch(()=>{{}}).finally(()=>{{
-            running=false;
+      document.getElementById("permBtn").addEventListener("click", startCamera);
+      document.getElementById("stopBtn").addEventListener("click", () => {{
+        if (running && html5Qr) {{
+          html5Qr.stop().catch(()=>{{}}).finally(() => {{
+            running = false;
+            document.getElementById('status').innerText = "Escaneo detenido.";
             document.getElementById("stopBtn").disabled = true;
-            document.getElementById('status').innerText = "Escaneo detenido";
           }});
         }}
       }});
     </script>
     """
-    components.html(scanner_html, height=700, scrolling=False, key="scanner_live")
 
-    st.divider()
-    st.markdown("### 🔍 Diagnóstico rápido (preview sin escanear)")
-    diag_html = """
-    <video id="videoTest" autoplay playsinline style="width:100%;max-width:360px;border-radius:8px;background:#000"></video>
-    <div id="diagMsg" style="font-size:14px;color:#6b7280;margin-top:6px"></div>
-    <script>
-      const msg = document.getElementById('diagMsg');
-      navigator.mediaDevices.getUserMedia({ video: { facingMode: { ideal: "environment" } } })
-      .then(stream => { document.getElementById('videoTest').srcObject = stream; msg.innerText = "Preview activo"; })
-      .catch(e => { msg.innerText = "❌ " + e.message; });
-    </script>
-    """
-    components.html(diag_html, height=420, key="diag_preview")
+    # Evita que un fallo del iframe tumbe la app
+    try:
+        components.html(scanner_html, height=700, scrolling=False, key="scanner_live_perm_first")
+    except Exception:
+        st.warning("El visor en vivo no está disponible en este dispositivo. Usa el **modo por foto** a continuación 👇")
 
     st.divider()
     st.subheader("Modo Staff — Escaneo por foto (compatibilidad iPhone)")
     st.caption("Toma una foto del QR. Decodificamos en el navegador y te enviamos a la verificación.")
+
     sede_staff_photo = st.selectbox(
         "Sede por defecto si el QR trae solo token (sin URL):",
         ["Holiday Inn Tuxtla (Día 1)", "Ex Convento Santo Domingo (Día 2)", "Museo de los Altos (Día 3)"],
@@ -439,6 +432,7 @@ with tabs[3]:
     </script>
     """
     components.html(html_photo, height=180, scrolling=False, key="scanner_photo")
+
 
 # ==========================
 # FIN
