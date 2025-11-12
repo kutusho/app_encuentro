@@ -39,6 +39,16 @@ SEDES = [
 # ==========================
 # FUNCIONES DE CONEXIÓN GOOGLE SHEETS
 # ==========================
+with st.expander("🔎 Diagnóstico de secrets"):
+    try:
+        s = st.secrets
+        st.write("Tiene [gcp_service_account]:", "gcp_service_account" in s)
+        st.write("client_email:", s.get("gcp_service_account", {}).get("client_email", "(no)"))
+        st.write("gsheet_id raíz:", s.get("gsheet_id", "(no)"))
+        st.write("gsheet_id en [sheets]:", s.get("sheets", {}).get("gsheet_id", "(no)"))
+    except Exception as e:
+        st.error(f"Error leyendo secrets: {e}")
+
 def get_gspread_client():
     creds_dict = st.secrets["gcp_service_account"]
     scopes = [
