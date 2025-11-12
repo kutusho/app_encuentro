@@ -44,7 +44,7 @@ def get_gspread_client():
 @st.cache_resource(show_spinner=False)
 def get_worksheets():
     gc = get_gspread_client()
-    ss_id = st.secrets["sheets"]["spreadsheet_id"]
+    ss_id = st.secrets["sheets"]["gsheet_id"]
     ws_att = st.secrets["sheets"]["attendees_ws"]
     ws_chk = st.secrets["sheets"]["checkins_ws"]
     ss = gc.open_by_key(ss_id)
