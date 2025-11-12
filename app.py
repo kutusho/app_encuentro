@@ -249,143 +249,112 @@ with tabs[3]:
     sede_val_live = sede_staff_live.replace('"', '\\"')
     base_url_live = st.session_state.get("base_url", DEFAULT_BASE_URL)
 
-    scanner_html = f"""
-    <div style="display:flex;gap:16px;flex-wrap:wrap;align-items:flex-start">
-      <div style="max-width:380px;">
-        <div id="banner" style="display:none;padding:12px;border-radius:10px;background:#fef3c7;color:#92400e;margin-bottom:10px;font-weight:600">
-          El visor en vivo no está disponible en este dispositivo o navegador. Usa el <b>modo por foto</b> a continuación.
-        </div>
-        <div id="permBanner" style="display:none;padding:12px;border-radius:10px;background:#eef2ff;color:#3730a3;margin-bottom:10px;font-weight:600">
-          Para continuar, otorga permiso de <b>cámara</b> cuando el navegador lo solicite.
-        </div>
-        <div id="reader" style="width:360px;height:360px;border:1px solid #e5e7eb;border-radius:10px;display:flex;align-items:center;justify-content:center;color:#6b7280">
-          <div style="text-align:center">
-            <div id="status" style='margin-bottom:10px;'>Cargando lector…</div>
-            <button id="startBtn" disabled style="padding:12px 16px;border-radius:12px;border:0;background:{PRIMARY_COLOR};color:#fff;font-weight:800;opacity:.6">Iniciar escaneo</button>
-          </div>
-        </div>
-        <div style="margin-top:6px">
-          <button id="stopBtn" disabled style="padding:8px 12px;border-radius:10px;border:1px solid #d1d5db;background:#fff">Detener</button>
-        </div>
-      </div>
-      <div style="flex:1;min-width:260px;">
-        <div id="log" style="font-size:14px;white-space:pre-wrap;color:#374151"></div>
-      </div>
-    </div>
+<div id="scanner-root" style="display:flex;flex-direction:column;align-items:center;gap:12px;">
+  <div id="status" style="font-family:system-ui, -apple-system, Segoe UI, Roboto;">
+    Cargando lector…
+  </div>
+  <div id="qrbox" style="width:320px;max-width:90vw;"></div>
+  <div style="display:flex;gap:8px;">
+    <button id="btnStart" disabled style="padding:.6rem 1rem;border-radius:8px;border:none;background:#6e9bab;color:#fff;cursor:not-allowed;">Iniciar escaneo</button>
+    <button id="btnStop" disabled style="padding:.6rem 1rem;border-radius:8px;border:1px solid #ccc;background:#f4f4f5;cursor:not-allowed;">Detener</button>
+  </div>
+  <button id="btnReloadLib" style="display:none;padding:.5rem .8rem;border-radius:8px;border:1px solid #ccc;background:#fff;">Reintentar cargar librería</button>
+</div>
 
-    <script>
-      const baseUrl = "{base_url_live}";
-      const sedeDef = "{sede_val_live}";
-      let html5Qr = null, running = false;
+<script>
+(function(){
+  const H5Q_URL = "https://unpkg.com/html5-qrcode@2.3.10/html5-qrcode.min.js";
+  const statusEl = document.getElementById("status");
+  const btnStart = document.getElementById("btnStart");
+  const btnStop  = document.getElementById("btnStop");
+  const btnReloadLib = document.getElementById("btnReloadLib");
+  const box = document.getElementById("qrbox");
+  let h5, cameraId;
 
-      function addLog(msg){{
-        const el = document.getElementById("log");
-        el.innerText = (el.innerText ? el.innerText + "\\n" : "") + msg;
-      }}
+  function loadLib(){
+    return new Promise((resolve, reject)=>{
+      // Evita doble carga
+      if (window.Html5Qrcode) return resolve();
+      const s = document.createElement("script");
+      s.src = H5Q_URL;
+      s.async = true;
+      s.onload = ()=> resolve();
+      s.onerror = ()=> reject(new Error("No se pudo cargar html5-qrcode"));
+      document.head.appendChild(s);
+    });
+  }
 
-      function buildUrlFromToken(token){{
-        return baseUrl + "/?token=" + encodeURIComponent(token) + "&sede=" + encodeURIComponent(sedeDef);
-      }}
+  function setEnabled(el, on){
+    el.disabled = !on;
+    el.style.cursor = on ? "pointer" : "not-allowed";
+    if (el === btnStart) el.style.background = on ? "#4f7da0" : "#6e9bab";
+  }
 
-      function onDecode(text){{
-        try {{
-          const t = (text||"").trim();
-          const url = /^https?:\\/\\//i.test(t) ? t : buildUrlFromToken(t);
-          addLog("✅ QR: " + t + "\\n→ " + url);
-          if (running && html5Qr) {{
-            html5Qr.stop().catch(()=>{{}}).finally(()=>{{ running=false; }});
-          }}
-          window.location.href = url;
-        }} catch(e) {{
-          addLog("❌ Error procesando QR: " + e);
-        }}
-      }}
+  async function ensurePermissions(){
+    // Llama a getUserMedia primero para detonar el prompt en iOS
+    await navigator.mediaDevices.getUserMedia({video: true});
+  }
 
-      function show(elId, show=true){{
-        const el = document.getElementById(elId);
-        if (!el) return;
-        el.style.display = show ? "block" : "none";
-      }}
+  async function init(){
+    try {
+      statusEl.textContent = "Cargando librería…";
+      await loadLib();
+      statusEl.textContent = "Librería lista.";
 
-      // Cargar librería y habilitar botón
-      (function loadLib(){{
-        const s = document.createElement('script');
-        s.src = "https://cdnjs.cloudflare.com/ajax/libs/html5-qrcode/2.3.10/html5-qrcode.min.js";
-        s.async = true;
-        s.onload = function(){{
-          const btn = document.getElementById('startBtn');
-          btn.disabled = false; btn.style.opacity = "1";
-          document.getElementById('status').innerText = "Lector listo. Pulsa Iniciar escaneo.";
-          // Si hay API de permisos, sugerimos que dará el prompt al pulsar
-          if (navigator.permissions && navigator.permissions.query) {{
-            navigator.permissions.query({{name: 'camera'}}).then(p => {{
-              if (p.state !== 'granted') show('permBanner', true);
-            }}).catch(()=>{{ show('permBanner', true); }});
-          }} else {{
-            show('permBanner', true);
-          }}
-        }};
-        s.onerror = function(){{
-          document.getElementById('status').innerText = "❌ No se pudo cargar la librería. Recarga la página.";
-        }};
-        document.head.appendChild(s);
-      }})();
+      // Pre-chequeo iOS/HTTPS
+      if (location.protocol !== "https:" && location.hostname !== "localhost") {
+        statusEl.innerHTML = "Esta página debe servirse por <b>HTTPS</b> para acceder a la cámara.";
+        return;
+      }
 
-      async function startScanner(){{
-        document.getElementById('status').innerText = "Solicitando acceso a cámara…";
-        try {{
-          // Pedimos permiso explícitamente tras el click del usuario (requerido por iOS/Safari)
-          await navigator.mediaDevices.getUserMedia({{ video: true }});
-        }} catch(e) {{
-          show('banner', true);
-          addLog("× Permiso denegado o no disponible: " + (e && e.message ? e.message : e));
-          document.getElementById('status').innerText = "Permiso de cámara no concedido.";
-          return;
-        }}
+      setEnabled(btnStart, true);
+      btnStart.onclick = async ()=>{
+        try{
+          setEnabled(btnStart, false);
+          await ensurePermissions(); // detona el prompt en iOS
+          const devices = await Html5Qrcode.getCameras();
+          if (!devices || !devices.length) throw new Error("No se encontró cámara");
+          cameraId = devices.find(d => /back|rear|environment/i.test(d.label))?.id || devices[0].id;
 
-        // Iniciamos html5-qrcode
-        try {{
-          document.getElementById("reader").innerHTML = "";
-          html5Qr = new Html5Qrcode("reader", false);
-
-          // Elegimos cámara trasera si existe
-          let camId = null;
-          try {{
-            const cams = await Html5Qrcode.getCameras();
-            if (cams && cams.length) {{
-              const back = cams.find(d=>/back|rear|environment/i.test(d.label));
-              camId = (back ? back.id : cams[0].id);
-            }}
-          }} catch(e) {{ addLog("× No se pudieron listar cámaras: " + e); }}
-
-          const constraints = camId ? {{ deviceId: {{ exact: camId }} }} : {{ facingMode: {{ ideal: "environment" }} }};
-          await html5Qr.start(
-            constraints,
-            {{ fps: 12, qrbox: {{ width: 260, height: 260 }}, aspectRatio: 1.0, disableFlip: true }},
-            onDecode,
-            () => {{}}
+          h5 = new Html5Qrcode("qrbox", { verbose: false });
+          await h5.start(
+            { deviceId: { exact: cameraId } },
+            { fps: 10, qrbox: 250, aspectRatio: 1.777 },
+            (decodedText)=> {
+              // TODO: manda el decodedText a Streamlit con postMessage si lo necesitas
+              statusEl.textContent = "QR: " + decodedText;
+            },
+            (err)=> {}
           );
-          running = true;
-          document.getElementById("stopBtn").disabled = false;
-          document.getElementById('status').innerText = "Escaneando…";
-        }} catch(e) {{
-          show('banner', true);
-          addLog("× No se pudo iniciar el escaneo: " + (e && e.message ? e.message : e));
-          document.getElementById('status').innerText = "No se pudo abrir la cámara.";
-        }}
-      }}
+          statusEl.textContent = "Escaneando…";
+          setEnabled(btnStop, true);
+        }catch(e){
+          statusEl.textContent = e.message || String(e);
+          setEnabled(btnStart, true);
+        }
+      };
 
-      document.getElementById("startBtn").addEventListener("click", startScanner);
-      document.getElementById("stopBtn").addEventListener("click", ()=>{{
-        if (running && html5Qr){{
-          html5Qr.stop().catch(()=>{{}}).finally(()=>{{
-            running=false;
-            document.getElementById("stopBtn").disabled = true;
-            document.getElementById('status').innerText = "Escaneo detenido";
-          }});
-        }}
-      }});
-    </script>
+      btnStop.onclick = async ()=>{
+        try{
+          if (h5) await h5.stop();
+        } finally {
+          if (h5) await h5.clear();
+          setEnabled(btnStop, false);
+          setEnabled(btnStart, true);
+          statusEl.textContent = "Detenido.";
+        }
+      };
+
+    } catch(e){
+      statusEl.innerHTML = "❌ No se pudo cargar la librería. ";
+      btnReloadLib.style.display = "inline-block";
+      btnReloadLib.onclick = ()=> { btnReloadLib.style.display="none"; init(); };
+    }
+  }
+
+  init();
+})();
+</script>
     """
     components.html(scanner_html, height=720, scrolling=False)
     
