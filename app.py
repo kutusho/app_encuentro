@@ -14,8 +14,13 @@ from PIL import Image
 import gspread
 from google.oauth2.service_account import Credentials
 
-st.sidebar.write("🔍 gsheet_id detectado:", st.secrets.get("gsheet_id", "(no detectado)"))
-st.sidebar.write("🧩 keys disponibles:", list(st.secrets.keys()))
+st.set_page_config(page_title="Encuentro", page_icon="✅", layout="centered")
+
+# (diagnóstico solo temporal)
+st.sidebar.write("🔍 gsheet_id raíz:", st.secrets.get("gsheet_id", "(no)"))
+st.sidebar.write("🔍 gsheet_id [sheets]:", st.secrets.get("sheets", {}).get("gsheet_id", "(no)"))
+st.sidebar.write("🧩 keys:", list(st.secrets.keys()))
+
 
 # ==========================
 # CONFIGURACIÓN GENERAL
