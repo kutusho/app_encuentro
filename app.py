@@ -246,18 +246,16 @@ with tabs[3]:
         index=0,
         key="sede_staff_live"
     )
-
-    # Variables seguras para inyectar en JS
     base_url_live = st.session_state.get("base_url", DEFAULT_BASE_URL)
     sede_val_live = sede_staff_live.replace('"', '\\"')
 
-    # === LECTOR CONTINUO CON SOLICITUD EXPLÍCITA DE PERMISOS ===
+    # === LECTOR CONTINUO CON SOLICITUD EXPLÍCITA DE PERMISOS + CHEQUEOS DE ENTORNO ===
     scanner_html = f"""
     <div style="display:flex;gap:16px;flex-wrap:wrap;align-items:flex-start">
-      <div style="max-width:380px;">
+      <div style="max-width:420px;">
         <div id="reader"
-             style="width:360px;height:360px;border:1px solid #e5e7eb;border-radius:10px;
-                    display:flex;align-items:center;justify-content:center;color:#6b7280;flex-direction:column;">
+             style="width:380px;height:380px;border:1px solid #e5e7eb;border-radius:10px;
+                    display:flex;align-items:center;justify-content:center;color:#6b7280;flex-direction:column;padding:12px;text-align:center">
           <div id="status" style="margin-bottom:10px;font-weight:600">
             📷 El lector necesita permiso para usar la cámara.
           </div>
@@ -266,6 +264,7 @@ with tabs[3]:
                          color:#fff;font-weight:800">
             Dar permiso y activar cámara
           </button>
+          <div id="advice" style="font-size:13px;color:#6b7280;margin-top:8px"></div>
         </div>
         <div style="margin-top:6px">
           <button id="stopBtn" disabled
@@ -290,21 +289,42 @@ with tabs[3]:
         el.innerText = (el.innerText ? el.innerText + "\\n" : "") + msg;
       }}
 
-      // Pide permisos primero (UX clara) y luego carga html5-qrcode
-      async function startCamera() {{
+      function buildUrlFromToken(t) {{
+        return /^https?:\\/\\//i.test(t)
+          ? t
+          : baseUrl + "/?token=" + encodeURIComponent(t) + "&sede=" + encodeURIComponent(sedeDef);
+      }}
+
+      async function askPermissionThenInit() {{
+        const stEl = document.getElementById('status');
+        const advice = document.getElementById('advice');
+
+        // Requisitos del navegador
+        if (!('mediaDevices' in navigator) || !('getUserMedia' in navigator.mediaDevices)) {{
+          stEl.innerText = "⚠️ Este navegador no soporta acceso a cámara. Usa el modo por foto.";
+          return;
+        }}
+        if (location.protocol !== 'https:') {{
+          stEl.innerText = "⚠️ Se requiere HTTPS para usar la cámara. Abre esta app con https://";
+          return;
+        }}
+
+        // iOS + iframe (limitación conocida)
+        const isIOS = /iPad|iPhone|iPod/.test(navigator.userAgent) && !window.MSStream;
+        const inIframe = (function(){{ try {{ return window.self !== window.top; }} catch(e) {{ return true; }} }})();
+        if (isIOS && inIframe) {{
+          advice.innerText = "ℹ️ En iPhone, la cámara dentro de iframes suele estar bloqueada por el navegador. Usa el modo por foto.";
+        }}
+
         try {{
-          if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {{
-            document.getElementById('status').innerText =
-              "⚠️ Este navegador no soporta acceso a cámara. Usa el modo por foto.";
-            return;
-          }}
-          const stream = await navigator.mediaDevices.getUserMedia({{ video: true }});
-          // Cerrar de inmediato: solo verificamos permisos
+          // Solicitar permisos explícitamente
+          const stream = await navigator.mediaDevices.getUserMedia({{ video: {{ facingMode: {{ ideal: 'environment' }} }} }});
+          // Cerramos de inmediato: solo verificamos permiso
           stream.getTracks().forEach(t => t.stop());
-          document.getElementById('status').innerText = "✅ Permiso concedido. Cargando lector…";
-          await initScanner();
+          stEl.innerText = "✅ Permiso concedido. Cargando lector…";
+          await loadAndStartScanner();
         }} catch (err) {{
-          document.getElementById('status').innerText = "⚠️ No se concedió permiso para la cámara.";
+          stEl.innerText = "⚠️ No se concedió permiso para la cámara.";
           addLog("Permiso denegado: " + (err && err.message ? err.message : err));
         }}
       }}
@@ -320,9 +340,9 @@ with tabs[3]:
         }});
       }}
 
-      async function initScanner() {{
-        // Cargar librería
+      async function loadAndStartScanner() {{
         await new Promise((resolve, reject) => {{
+          if (window.Html5Qrcode) return resolve();
           const s = document.createElement('script');
           s.src = "https://cdnjs.cloudflare.com/ajax/libs/html5-qrcode/2.3.10/html5-qrcode.min.js";
           s.async = true;
@@ -330,7 +350,6 @@ with tabs[3]:
           s.onerror = () => reject(new Error("No se pudo cargar html5-qrcode"));
           document.head.appendChild(s);
         }});
-
         try {{
           await waitForLib(4000);
           document.getElementById('status').innerText = "Lector listo. Enfoca el QR…";
@@ -341,18 +360,12 @@ with tabs[3]:
         }}
       }}
 
-      function buildUrlFromToken(t) {{
-        return /^https?:\\/\\//i.test(t)
-          ? t
-          : baseUrl + "/?token=" + encodeURIComponent(t) + "&sede=" + encodeURIComponent(sedeDef);
-      }}
-
       async function startScanner() {{
         try {{
           html5Qr = new Html5Qrcode("reader", false);
           await html5Qr.start(
             {{ facingMode: {{ ideal: "environment" }} }},
-            {{ fps: 12, qrbox: {{ width: 260, height: 260 }}, aspectRatio: 1.0, disableFlip: true }},
+            {{ fps: 12, qrbox: {{ width: 280, height: 280 }}, aspectRatio: 1.0, disableFlip: true }},
             (decodedText) => {{
               addLog("QR leído: " + decodedText);
               window.location.href = buildUrlFromToken(decodedText);
@@ -368,7 +381,7 @@ with tabs[3]:
         }}
       }}
 
-      document.getElementById("permBtn").addEventListener("click", startCamera);
+      document.getElementById("permBtn").addEventListener("click", askPermissionThenInit);
       document.getElementById("stopBtn").addEventListener("click", () => {{
         if (running && html5Qr) {{
           html5Qr.stop().catch(()=>{{}}).finally(() => {{
@@ -381,9 +394,9 @@ with tabs[3]:
     </script>
     """
 
-    # Evita que un fallo del iframe tumbe la app
+    # Si el iframe falla, no tumbes la app
     try:
-        components.html(scanner_html, height=700, scrolling=False, key="scanner_live_perm_first")
+        components.html(scanner_html, height=720, scrolling=False, key="scanner_live_perm_first_v2")
     except Exception:
         st.warning("El visor en vivo no está disponible en este dispositivo. Usa el **modo por foto** a continuación 👇")
 
@@ -405,34 +418,77 @@ with tabs[3]:
            style="padding:12px;border:1px solid #e5e7eb;border-radius:12px;width:100%;max-width:420px">
     <div id="photoResult" style="margin-top:10px;font-family:system-ui,-apple-system,Segoe UI,Roboto,Ubuntu,Cantarell,Noto Sans,Helvetica,Arial;"></div>
     <canvas id="qrCanvas" style="display:none"></canvas>
-    <script src="https://cdn.jsdelivr.net/npm/jsqr@1.4.0/dist/jsQR.js"></script>
+
     <script>
+    (function() {{
       const baseUrlP = "{base_url_photo}";
       const sedeDefP = "{sede_val_photo}";
-      function toUrl(t){{ return /^https?:\\/\\//i.test(t) ? t : baseUrlP + "/?token=" + encodeURIComponent(t) + "&sede=" + encodeURIComponent(sedeDefP); }}
-      document.getElementById("qrFile").addEventListener("change", (ev) => {{
-        const f = ev.target.files && ev.target.files[0]; if (!f) return;
-        const img = new Image(); const url = URL.createObjectURL(f);
+      const resEl = document.getElementById("photoResult");
+      const fileEl = document.getElementById("qrFile");
+
+      function toUrl(t) {{
+        return /^https?:\\/\\//i.test(t)
+          ? t
+          : baseUrlP + "/?token=" + encodeURIComponent(t) + "&sede=" + encodeURIComponent(sedeDefP);
+      }}
+
+      function loadJsQR(cb) {{
+        if (window.jsQR) return cb();
+        const s = document.createElement("script");
+        s.src = "https://cdn.jsdelivr.net/npm/jsqr@1.4.0/dist/jsQR.js";
+        s.async = true;
+        s.onload = cb;
+        s.onerror = () => {{ resEl.innerText = "❌ No se pudo cargar el decodificador jsQR."; }};
+        document.head.appendChild(s);
+      }}
+
+      function onFile(ev) {{
+        const f = ev.target.files && ev.target.files[0];
+        if (!f) return;
+        const img = new Image();
+        const url = URL.createObjectURL(f);
         img.onload = () => {{
-          const c = document.getElementById("qrCanvas"), x = c.getContext("2d");
-          c.width = img.naturalWidth; c.height = img.naturalHeight; x.drawImage(img,0,0);
-          const d = x.getImageData(0,0,c.width,c.height);
-          const code = jsQR(d.data, c.width, c.height, {{ inversionAttempts: "attemptBoth" }});
-          if (code && code.data) {{
-            document.getElementById("photoResult").innerHTML = "✅ QR leído. Abriendo…";
-            window.location.href = toUrl(code.data);
-          }} else {{
-            document.getElementById("photoResult").innerText = "❌ No se detectó un QR claro. Intenta acercar y enfocar.";
+          try {{
+            const c = document.getElementById("qrCanvas");
+            const x = c.getContext("2d");
+            c.width = img.naturalWidth; c.height = img.naturalHeight;
+            x.drawImage(img, 0, 0);
+            const d = x.getImageData(0, 0, c.width, c.height);
+            const code = window.jsQR && jsQR(d.data, c.width, c.height, {{ inversionAttempts: "attemptBoth" }});
+            if (code && code.data) {{
+              resEl.innerHTML = "✅ QR leído. Abriendo…";
+              window.location.href = toUrl(code.data);
+            }} else {{
+              resEl.innerText = "❌ No se detectó un QR claro. Intenta acercar, enfocar o más luz.";
+            }}
+          }} catch(e) {{
+            resEl.innerText = "❌ Error procesando la imagen: " + (e && e.message ? e.message : e);
+          }} finally {{
+            URL.revokeObjectURL(url);
           }}
-          URL.revokeObjectURL(url);
         }};
-        img.onerror = () => {{ document.getElementById("photoResult").innerText = "❌ No se pudo cargar la imagen."; URL.revokeObjectURL(url); }};
+        img.onerror = () => {{ resEl.innerText = "❌ No se pudo cargar la imagen."; URL.revokeObjectURL(url); }};
         img.src = url;
+      }}
+
+      document.addEventListener("DOMContentLoaded", () => {{
+        loadJsQR(() => {{
+          if (!fileEl) {{
+            resEl.innerText = "❌ El selector de archivos no está disponible.";
+            return;
+          }}
+          fileEl.addEventListener("change", onFile, {{ passive: true }});
+          resEl.innerText = "📎 Sube una foto del QR para leerlo.";
+        }});
       }});
+    }})();
     </script>
     """
-    components.html(html_photo, height=180, scrolling=False, key="scanner_photo")
 
+    try:
+        components.html(html_photo, height=220, scrolling=False, key="scanner_photo_safe_v2")
+    except Exception:
+        st.warning("No se pudo inicializar el modo por foto en este dispositivo. Abre la cámara nativa o usa un lector externo.")
 
 # ==========================
 # FIN
