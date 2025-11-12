@@ -14,6 +14,9 @@ from PIL import Image
 import gspread
 from google.oauth2.service_account import Credentials
 
+st.sidebar.write("🔍 gsheet_id detectado:", st.secrets.get("gsheet_id", "(no detectado)"))
+st.sidebar.write("🧩 keys disponibles:", list(st.secrets.keys()))
+
 # ==========================
 # CONFIGURACIÓN GENERAL
 # ==========================
