@@ -1,284 +1,439 @@
 # app.py
 import os
-import time
+import io
 import uuid
-import datetime as dt
-
+import time
+import qrcode
 import pandas as pd
 import streamlit as st
 import streamlit.components.v1 as components
+from datetime import datetime
+from google.oauth2.service_account import Credentials
+import gspread
 
-# ====== CONFIG ======
+# ==========================
+# CONFIGURACIÓN BÁSICA
+# ==========================
 st.set_page_config(
-    page_title="Encuentro Internacional de Guías – Registro y QR",
-    page_icon="🧭",
-    layout="centered"
+    page_title="Primer Encuentro Internacional de Guías de Turistas en Chiapas",
+    page_icon="✅",
+    layout="wide",
 )
 
-# ====== UTILS: Google Sheets ======
-# Requiere en st.secrets:
-# [gcp_service_account] ... (tu JSON)
-# [sheets]
-# gsheet_id = "..."
-# attendees_ws = "asistentes"
-# checkins_ws  = "checkins"
-def _open_sheets():
-    try:
-        import gspread
-        from google.oauth2.service_account import Credentials
+DEFAULT_BASE_URL = st.secrets.get("base_url", "https://encuentro.streamlit.app")
 
-        sa_info = dict(st.secrets["gcp_service_account"])
-        scopes = [
-            "https://www.googleapis.com/auth/spreadsheets",
-            "https://www.googleapis.com/auth/drive",
-        ]
-        creds = Credentials.from_service_account_info(sa_info, scopes=scopes)
-        gc = gspread.authorize(creds)
+LOGO_PATH = "assets/logo_colegio.png"
+HERO_PATH = "assets/hero.png"
 
-        sh = gc.open_by_key(st.secrets["sheets"]["gsheet_id"])
-        ws_att = sh.worksheet(st.secrets["sheets"]["attendees_ws"])
-        ws_chk = sh.worksheet(st.secrets["sheets"]["checkins_ws"])
-        return sh, ws_att, ws_chk
-    except Exception as e:
-        st.warning(f"No se pudo abrir Google Sheets: {e}")
-        return None, None, None
+PRIMARY_COLOR = "#0b5f8a"   # azul institucional
+ACCENT_COLOR  = "#2fa24b"   # verde institucional
 
-def append_checkin(ws_chk, data: dict):
-    """Agrega un registro a la hoja de checkins."""
-    try:
-        headers = ws_chk.row_values(1)
-        row = [data.get(h, "") for h in headers]
-        ws_chk.append_row(row, value_input_option="USER_ENTERED")
-        return True
-    except Exception as e:
-        st.error(f"No se pudo escribir en 'checkins': {e}")
-        return False
+# ==========================
+# UTILIDADES
+# ==========================
+@st.cache_resource(show_spinner=False)
+def get_gspread_client():
+    sa = st.secrets["gcp_service_account"]
+    scopes = [
+        "https://www.googleapis.com/auth/spreadsheets",
+        "https://www.googleapis.com/auth/drive",
+    ]
+    creds = Credentials.from_service_account_info(sa, scopes=scopes)
+    return gspread.authorize(creds)
 
-# ====== ESTADO ======
-if "last_scanned" not in st.session_state:
-    st.session_state.last_scanned = ""
-if "venue_default" not in st.session_state:
-    st.session_state.venue_default = "Holiday Inn Tuxtla (Día 1)"
+@st.cache_resource(show_spinner=False)
+def get_worksheets():
+    gc = get_gspread_client()
+    ss_id = st.secrets["sheets"].get("gsheet_id") or st.secrets["sheets"]["spreadsheet_id"]
+    ws_att = st.secrets["sheets"]["attendees_ws"]
+    ws_chk = st.secrets["sheets"]["checkins_ws"]
+    ss = gc.open_by_key(ss_id)
+    w_att = ss.worksheet(ws_att)
+    w_chk = ss.worksheet(ws_chk)
+    # Garantizar encabezados
+    ensure_headers(w_att, ["timestamp","nombre","institucion","cuota","email","telefono","token","sede_default"])
+    ensure_headers(w_chk, ["timestamp","token","sede","origen"])
+    return w_att, w_chk
 
-# ====== SIDEBAR ======
-st.sidebar.markdown("### 🎟️ Encuentro Internacional de Guías")
-st.sidebar.caption("Escaneo de QR y registro de asistentes")
+def ensure_headers(ws, headers):
+    cur = ws.row_values(1)
+    if [h.lower() for h in cur] != [h.lower() for h in headers]:
+        ws.clear()
+        ws.append_row(headers)
 
-venue = st.sidebar.selectbox(
-    "Sede por defecto (si el QR solo trae token):",
-    ["Holiday Inn Tuxtla (Día 1)", "Chiapa de Corzo (Día 2)", "Museo de los Altos (Día 3)"],
-    index=["Holiday Inn Tuxtla (Día 1)", "Chiapa de Corzo (Día 2)", "Museo de los Altos (Día 3)"].index(st.session_state.venue_default),
-)
-st.session_state.venue_default = venue
+def df_attendees():
+    w_att, _ = get_worksheets()
+    vals = w_att.get_all_values()
+    if not vals: return pd.DataFrame(columns=["timestamp","nombre","institucion","cuota","email","telefono","token","sede_default"])
+    df = pd.DataFrame(vals[1:], columns=vals[0])
+    return df
 
-st.sidebar.info(
-    "Si en iPhone el lector no inicia, usa el **modo por foto** del mismo lector "
-    "o pega el código manualmente abajo."
-)
+def df_checkins():
+    _, w_chk = get_worksheets()
+    vals = w_chk.get_all_values()
+    if not vals: return pd.DataFrame(columns=["timestamp","token","sede","origen"])
+    df = pd.DataFrame(vals[1:], columns=vals[0])
+    return df
 
-# ====== TÍTULO ======
-st.title("🧾 Registro y Escáner de QR – Staff")
+def add_attendee(nombre, institucion, cuota, email, telefono, sede_default):
+    token = str(uuid.uuid4())
+    w_att, _ = get_worksheets()
+    w_att.append_row([
+        datetime.now().isoformat(timespec="seconds"),
+        nombre, institucion, cuota, email, telefono, token, sede_default
+    ])
+    return token
 
-# ====== BLOQUE: ESCÁNER INTEGRADO ======
-st.subheader("Escáner integrado (prueba primero aquí)")
-st.caption("Este lector solicita permiso de cámara al presionar **Iniciar escaneo** (iOS/Android).")
+def record_checkin(token, sede, origen="url"):
+    _, w_chk = get_worksheets()
+    w_chk.append_row([datetime.now().isoformat(timespec="seconds"), token, sede, origen])
 
-scanner_html = f"""
-<div id="scanner-root" style="display:flex;flex-direction:column;align-items:center;gap:12px;">
-  <div id="status" style="font-family:system-ui, -apple-system, Segoe UI, Roboto;">
-    Cargando lector…
-  </div>
-  <div id="qrbox" style="width:320px;max-width:90vw;border-radius:12px;overflow:hidden;"></div>
-  <div style="display:flex;gap:8px;">
-    <button id="btnStart" disabled style="padding:.6rem 1rem;border-radius:8px;border:none;background:#6e9bab;color:#fff;cursor:not-allowed;">Iniciar escaneo</button>
-    <button id="btnStop" disabled style="padding:.6rem 1rem;border-radius:8px;border:1px solid #ccc;background:#f4f4f5;cursor:not-allowed;">Detener</button>
-  </div>
-  <button id="btnReloadLib" style="display:none;padding:.5rem .8rem;border-radius:8px;border:1px solid #ccc;background:#fff;">Reintentar cargar librería</button>
+def attendee_by_token(token):
+    df = df_attendees()
+    if df.empty: return None
+    hit = df[df["token"] == token]
+    if hit.empty: return None
+    return hit.iloc[0].to_dict()
 
-  <div style="margin-top:8px;font-size:.9rem;opacity:.8;">
-    Si no abre la cámara en iPhone, baja a <b>Registro manual</b> o usa el modo foto del mismo lector.
-  </div>
-</div>
+def has_checkin(token):
+    d = df_checkins()
+    if d.empty: return False
+    return any(d["token"] == token)
 
-<script>
-(function(){{
-  const H5Q_URL = "https://unpkg.com/html5-qrcode@2.3.10/html5-qrcode.min.js";
-  const statusEl = document.getElementById("status");
-  const btnStart = document.getElementById("btnStart");
-  const btnStop  = document.getElementById("btnStop");
-  const btnReloadLib = document.getElementById("btnReloadLib");
-  const box = document.getElementById("qrbox");
-  let h5, cameraId;
+def build_verify_url(token, sede):
+    base = st.session_state.get("base_url", DEFAULT_BASE_URL)
+    return f"{base}/?token={token}&sede={sede}"
 
-  function loadLib(){{
-    return new Promise((resolve, reject)=>{{
-      if (window.Html5Qrcode) return resolve();
-      const s = document.createElement("script");
-      s.src = H5Q_URL;
-      s.async = true;
-      s.onload = ()=> resolve();
-      s.onerror = ()=> reject(new Error("No se pudo cargar html5-qrcode"));
-      document.head.appendChild(s);
-    }});
-  }}
+def qr_img_bytes(url: str) -> bytes:
+    img = qrcode.make(url)
+    buf = io.BytesIO()
+    img.save(buf, format="PNG")
+    return buf.getvalue()
 
-  function setEnabled(el, on){{
-    el.disabled = !on;
-    el.style.cursor = on ? "pointer" : "not-allowed";
-    if (el === btnStart) el.style.background = on ? "#4f7da0" : "#6e9bab";
-  }}
+def big_result_box(txt: str, color: str):
+    st.markdown(
+        f"""
+        <div style="
+            border-radius:16px;padding:24px;
+            background:{color};color:white;
+            font-size:22px;font-weight:800;text-align:center;">
+            {txt}
+        </div>
+        """,
+        unsafe_allow_html=True
+    )
 
-  async function ensurePermissions(){{
-    // Dispara el prompt de iOS
-    await navigator.mediaDevices.getUserMedia({{ video: true }});
-  }}
+# ==========================
+# ENCABEZADO
+# ==========================
+col_logo, col_title = st.columns([1,3], gap="large")
+with col_logo:
+    if os.path.exists(LOGO_PATH):
+        st.image(LOGO_PATH, width=140)
+with col_title:
+    st.title("Primer Encuentro Internacional de Guías de Turistas en Chiapas")
+    st.subheader("14–16 de noviembre de 2025")
+    st.caption("Saberes que unen, culturas que inspiran. • Colegio de Guías de Turistas de Chiapas A.C.")
 
-  function postToStreamlit(text){{
-    // Devolvemos el texto al contenedor padre (Streamlit) para que lo capture.
-    // Streamlit no expone una API oficial aquí, pero podemos inyectarlo en hash para copiar/pegar rápido.
-    try {{
-      window.parent.postMessage({{ type: "qr-decoded", payload: text }}, "*");
-    }} catch (e) {{}}
-    try {{
-      // como respaldo, copiamos al portapapeles
-      navigator.clipboard.writeText(text);
-    }} catch (e) {{}}
-  }}
+# ==========================
+# VERIFICACIÓN POR URL (modo pantalla grande para el staff)
+# ==========================
+qp = st.query_params
+if "token" in qp:
+    token = qp.get("token", [""])[0].strip()
+    sede  = qp.get("sede",  [""])[0].strip() or "Sede general"
+    st.markdown("---")
+    st.header("Verificación de acceso")
+    att = attendee_by_token(token)
+    if not att:
+        big_result_box("❌ QR inválido / token no encontrado", "#b91c1c")
+        st.stop()
 
-  async function init(){{
-    try {{
-      statusEl.textContent = "Cargando librería…";
-      await loadLib();
-      statusEl.textContent = "Librería lista.";
+    if has_checkin(token):
+        big_result_box("🟡 Ya registrado anteriormente", "#d97706")
+        st.write(f"**Nombre:** {att['nombre']}")
+        st.write(f"**Cuota:** {att['cuota']}")
+        st.stop()
 
-      if (location.protocol !== "https:" && location.hostname !== "localhost") {{
-        statusEl.innerHTML = "Esta página debe servirse por <b>HTTPS</b> para acceder a la cámara.";
-        return;
+    # marcar check-in
+    record_checkin(token, sede, origen="url")
+    big_result_box("🟢 Acceso verificado", "#15803d")
+    st.write(f"**Nombre:** {att['nombre']}")
+    st.write(f"**Cuota:** {att['cuota']}")
+    st.stop()
+
+# ==========================
+# TABS
+# ==========================
+tabs = st.tabs(["📝 Registro", "📊 Reportes", "⚙️ Ajustes", "🛡️ Staff"])
+
+# --------------------------
+# REGISTRO
+# --------------------------
+with tabs[0]:
+    st.subheader("Registrar nuevo asistente")
+    st.info(f"Base URL actual para generar QR: {st.session_state.get('base_url', DEFAULT_BASE_URL)}")
+
+    c1, c2 = st.columns(2)
+    with c1:
+        nombre = st.text_input("Nombre completo *", key="reg_nombre")
+        instit = st.text_input("Institución / Empresa", key="reg_inst")
+        cuota  = st.selectbox("Tipo de cuota", ["Guía Chiapas", "Público general", "Estudiante"], key="reg_cuota")
+    with c2:
+        email = st.text_input("Email", key="reg_email")
+        tel   = st.text_input("Teléfono", key="reg_tel")
+
+    sede_default = st.selectbox("Sede por defecto para el check-in vía URL",
+                                ["Holiday Inn Tuxtla (Día 1)",
+                                 "Ex Convento Santo Domingo (Día 2)",
+                                 "Museo de los Altos (Día 3)"],
+                                 key="reg_sede_def")
+
+    if st.button("Registrar", type="primary", key="btn_registrar"):
+        if not nombre.strip():
+            st.warning("El nombre es obligatorio.")
+        else:
+            token = add_attendee(nombre.strip(), instit.strip(), cuota, email.strip(), tel.strip(), sede_default)
+            url = build_verify_url(token, sede_default)
+            st.success("¡Registro guardado!")
+            st.write("URL de verificación / QR:")
+            st.code(url, language="text")
+            st.download_button("Descargar QR", qr_img_bytes(url), file_name=f"qr_{nombre}.png", mime="image/png")
+
+    st.divider()
+    st.subheader("Listado (vista rápida)")
+    df = df_attendees()
+    st.dataframe(df, use_container_width=True, height=320)
+
+# --------------------------
+# REPORTES
+# --------------------------
+with tabs[1]:
+    st.subheader("Reportes")
+    dfa = df_attendees()
+    dfc = df_checkins()
+
+    colA, colB, colC = st.columns(3)
+    colA.metric("Asistentes registrados", len(dfa))
+    colB.metric("Check-ins realizados", len(dfc))
+    pct = 0 if len(dfa)==0 else round(100*len(dfc)/len(dfa),1)
+    colC.metric("% Asistencia", f"{pct}%")
+
+    st.markdown("#### Detalle de check-ins")
+    st.dataframe(dfc.sort_values("timestamp", ascending=False), use_container_width=True, height=320)
+
+# --------------------------
+# AJUSTES
+# --------------------------
+with tabs[2]:
+    st.subheader("Ajustes")
+    base = st.text_input("Base URL del sistema (para generar/verificar QR)", value=st.session_state.get("base_url", DEFAULT_BASE_URL), key="base_url_input")
+    if st.button("Guardar Base URL", key="btn_save_base"):
+        st.session_state["base_url"] = base.strip() or DEFAULT_BASE_URL
+        st.success(f"Base URL actualizada a: {st.session_state['base_url']}")
+    st.caption("Sugerido: tu dominio de Streamlit Cloud de esta app.")
+
+# --------------------------
+# STAFF (lector + fallback por foto)
+# --------------------------
+with tabs[3]:
+    st.subheader("Modo Staff — Escaneo con cámara")
+    st.caption("Si en iPhone el lector no inicia, usa el **modo por foto** de abajo. En Android/PC el lector continuo funciona bien.")
+
+    sede_staff_live = st.selectbox(
+        "Sede por defecto si el QR trae solo token (sin URL):",
+        ["Holiday Inn Tuxtla (Día 1)", "Ex Convento Santo Domingo (Día 2)", "Museo de los Altos (Día 3)"],
+        index=0,
+        key="sede_staff_live"
+    )
+    sede_val_live = sede_staff_live.replace('"', '\\"')
+    base_url_live = st.session_state.get("base_url", DEFAULT_BASE_URL)
+
+    scanner_html = f"""
+    <div style="display:flex;gap:16px;flex-wrap:wrap;align-items:flex-start">
+      <div style="max-width:380px;">
+        <div id="banner" style="display:none;padding:12px;border-radius:10px;background:#fef3c7;color:#92400e;margin-bottom:10px;font-weight:600">
+          El visor en vivo no está disponible en este dispositivo o navegador. Usa el <b>modo por foto</b> a continuación.
+        </div>
+        <div id="permBanner" style="display:none;padding:12px;border-radius:10px;background:#eef2ff;color:#3730a3;margin-bottom:10px;font-weight:600">
+          Para continuar, otorga permiso de <b>cámara</b> cuando el navegador lo solicite.
+        </div>
+        <div id="reader" style="width:360px;height:360px;border:1px solid #e5e7eb;border-radius:10px;display:flex;align-items:center;justify-content:center;color:#6b7280">
+          <div style="text-align:center">
+            <div id="status" style='margin-bottom:10px;'>Cargando lector…</div>
+            <button id="startBtn" disabled style="padding:12px 16px;border-radius:12px;border:0;background:{PRIMARY_COLOR};color:#fff;font-weight:800;opacity:.6">Iniciar escaneo</button>
+          </div>
+        </div>
+        <div style="margin-top:6px">
+          <button id="stopBtn" disabled style="padding:8px 12px;border-radius:10px;border:1px solid #d1d5db;background:#fff">Detener</button>
+        </div>
+      </div>
+      <div style="flex:1;min-width:260px;">
+        <div id="log" style="font-size:14px;white-space:pre-wrap;color:#374151"></div>
+      </div>
+    </div>
+
+    <script>
+      const baseUrl = "{base_url_live}";
+      const sedeDef = "{sede_val_live}";
+      let html5Qr = null, running = false;
+
+      function addLog(msg){{
+        const el = document.getElementById("log");
+        el.innerText = (el.innerText ? el.innerText + "\\n" : "") + msg;
       }}
 
-      setEnabled(btnStart, true);
+      function buildUrlFromToken(token){{
+        return baseUrl + "/?token=" + encodeURIComponent(token) + "&sede=" + encodeURIComponent(sedeDef);
+      }}
 
-      btnStart.onclick = async ()=>{{
+      function onDecode(text){{
         try {{
-          setEnabled(btnStart, false);
-          await ensurePermissions(); // iOS prompt
-          const devices = await Html5Qrcode.getCameras();
-          if (!devices || !devices.length) throw new Error("No se encontró cámara");
-          cameraId = devices.find(d => /back|rear|environment/i.test(d.label))?.id || devices[0].id;
-
-          h5 = new Html5Qrcode("qrbox", {{ verbose: false }});
-          await h5.start(
-            {{ deviceId: {{ exact: cameraId }} }},
-            {{ fps: 10, qrbox: 250, aspectRatio: 1.777 }},
-            (decodedText)=> {{
-              statusEl.textContent = "QR: " + decodedText;
-              postToStreamlit(decodedText);
-            }},
-            (err)=> {{}}
-          );
-          statusEl.textContent = "Escaneando…";
-          setEnabled(btnStop, true);
+          const t = (text||"").trim();
+          const url = /^https?:\\/\\//i.test(t) ? t : buildUrlFromToken(t);
+          addLog("✅ QR: " + t + "\\n→ " + url);
+          if (running && html5Qr) {{
+            html5Qr.stop().catch(()=>{{}}).finally(()=>{{ running=false; }});
+          }}
+          window.location.href = url;
         }} catch(e) {{
-          statusEl.textContent = e.message || String(e);
-          setEnabled(btnStart, true);
+          addLog("❌ Error procesando QR: " + e);
         }}
-      }};
+      }}
 
-      btnStop.onclick = async ()=>{{
+      function show(elId, show=true){{
+        const el = document.getElementById(elId);
+        if (!el) return;
+        el.style.display = show ? "block" : "none";
+      }}
+
+      // Cargar librería y habilitar botón
+      (function loadLib(){{
+        const s = document.createElement('script');
+        s.src = "https://cdnjs.cloudflare.com/ajax/libs/html5-qrcode/2.3.10/html5-qrcode.min.js";
+        s.async = true;
+        s.onload = function(){{
+          const btn = document.getElementById('startBtn');
+          btn.disabled = false; btn.style.opacity = "1";
+          document.getElementById('status').innerText = "Lector listo. Pulsa Iniciar escaneo.";
+          // Si hay API de permisos, sugerimos que dará el prompt al pulsar
+          if (navigator.permissions && navigator.permissions.query) {{
+            navigator.permissions.query({{name: 'camera'}}).then(p => {{
+              if (p.state !== 'granted') show('permBanner', true);
+            }}).catch(()=>{{ show('permBanner', true); }});
+          }} else {{
+            show('permBanner', true);
+          }}
+        }};
+        s.onerror = function(){{
+          document.getElementById('status').innerText = "❌ No se pudo cargar la librería. Recarga la página.";
+        }};
+        document.head.appendChild(s);
+      }})();
+
+      async function startScanner(){{
+        document.getElementById('status').innerText = "Solicitando acceso a cámara…";
         try {{
-          if (h5) await h5.stop();
-        }} finally {{
-          if (h5) await h5.clear();
-          setEnabled(btnStop, false);
-          setEnabled(btnStart, true);
-          statusEl.textContent = "Detenido.";
+          // Pedimos permiso explícitamente tras el click del usuario (requerido por iOS/Safari)
+          await navigator.mediaDevices.getUserMedia({{ video: true }});
+        }} catch(e) {{
+          show('banner', true);
+          addLog("× Permiso denegado o no disponible: " + (e && e.message ? e.message : e));
+          document.getElementById('status').innerText = "Permiso de cámara no concedido.";
+          return;
         }}
-      }};
 
-    }} catch(e) {{
-      statusEl.innerHTML = "❌ No se pudo cargar la librería.";
-      btnReloadLib.style.display = "inline-block";
-      btnReloadLib.onclick = ()=> {{ btnReloadLib.style.display="none"; init(); }};
-    }}
-  }}
+        // Iniciamos html5-qrcode
+        try {{
+          document.getElementById("reader").innerHTML = "";
+          html5Qr = new Html5Qrcode("reader", false);
 
-  // Listener para debug manual (opcional)
-  window.addEventListener("message", (ev)=>{{
-    // Puedes ver mensajes en la consola si lo necesitas
-  }});
+          // Elegimos cámara trasera si existe
+          let camId = null;
+          try {{
+            const cams = await Html5Qrcode.getCameras();
+            if (cams && cams.length) {{
+              const back = cams.find(d=>/back|rear|environment/i.test(d.label));
+              camId = (back ? back.id : cams[0].id);
+            }}
+          }} catch(e) {{ addLog("× No se pudieron listar cámaras: " + e); }}
 
-  init();
-}})();
-</script>
-"""
+          const constraints = camId ? {{ deviceId: {{ exact: camId }} }} : {{ facingMode: {{ ideal: "environment" }} }};
+          await html5Qr.start(
+            constraints,
+            {{ fps: 12, qrbox: {{ width: 260, height: 260 }}, aspectRatio: 1.0, disableFlip: true }},
+            onDecode,
+            () => {{}}
+          );
+          running = true;
+          document.getElementById("stopBtn").disabled = false;
+          document.getElementById('status').innerText = "Escaneando…";
+        }} catch(e) {{
+          show('banner', true);
+          addLog("× No se pudo iniciar el escaneo: " + (e && e.message ? e.message : e));
+          document.getElementById('status').innerText = "No se pudo abrir la cámara.";
+        }}
+      }}
 
-# Render del lector (sin usar 'key' para evitar TypeError en algunos entornos)
-components.html(scanner_html, height=520, scrolling=False)
+      document.getElementById("startBtn").addEventListener("click", startScanner);
+      document.getElementById("stopBtn").addEventListener("click", ()=>{{
+        if (running && html5Qr){{
+          html5Qr.stop().catch(()=>{{}}).finally(()=>{{
+            running=false;
+            document.getElementById("stopBtn").disabled = true;
+            document.getElementById('status').innerText = "Escaneo detenido";
+          }});
+        }}
+      }});
+    </script>
+    """
+    components.html(scanner_html, height=720, scrolling=False)
+    
+    st.divider()
+    st.subheader("Modo Staff — Escaneo por foto (compatibilidad iPhone)")
+    st.caption("Toma una foto del QR. Decodificamos en el navegador y te enviamos a la verificación.")
+    sede_staff_photo = st.selectbox(
+        "Sede por defecto si el QR trae solo token (sin URL):",
+        ["Holiday Inn Tuxtla (Día 1)", "Ex Convento Santo Domingo (Día 2)", "Museo de los Altos (Día 3)"],
+        index=0,
+        key="sede_staff_photo"
+    )
+    sede_val_photo = sede_staff_photo.replace('"', '\\"')
+    base_url_photo = st.session_state.get("base_url", DEFAULT_BASE_URL)
 
-st.divider()
+    html_photo = f"""
+    <input id="qrFile" type="file" accept="image/*" capture="environment"
+           style="padding:12px;border:1px solid #e5e7eb;border-radius:12px;width:100%;max-width:420px">
+    <div id="photoResult" style="margin-top:10px;font-family:system-ui,-apple-system,Segoe UI,Roboto,Ubuntu,Cantarell,Noto Sans,Helvetica,Arial;"></div>
+    <canvas id="qrCanvas" style="display:none"></canvas>
+    <script src="https://cdn.jsdelivr.net/npm/jsqr@1.4.0/dist/jsQR.js"></script>
+    <script>
+      const baseUrlP = "{base_url_photo}";
+      const sedeDefP = "{sede_val_photo}";
+      function toUrl(t){{ return /^https?:\\/\\//i.test(t) ? t : baseUrlP + "/?token=" + encodeURIComponent(t) + "&sede=" + encodeURIComponent(sedeDefP); }}
+      document.getElementById("qrFile").addEventListener("change", (ev) => {{
+        const f = ev.target.files && ev.target.files[0]; if (!f) return;
+        const img = new Image(); const url = URL.createObjectURL(f);
+        img.onload = () => {{
+          const c = document.getElementById("qrCanvas"), x = c.getContext("2d");
+          c.width = img.naturalWidth; c.height = img.naturalHeight; x.drawImage(img,0,0);
+          const d = x.getImageData(0,0,c.width,c.height);
+          const code = jsQR(d.data, c.width, c.height, {{ inversionAttempts: "attemptBoth" }});
+          if (code && code.data) {{
+            document.getElementById("photoResult").innerHTML = "✅ QR leído. Abriendo…";
+            window.location.href = toUrl(code.data);
+          }} else {{
+            document.getElementById("photoResult").innerText = "❌ No se detectó un QR claro. Intenta acercar y enfocar.";
+          }}
+          URL.revokeObjectURL(url);
+        }};
+        img.onerror = () => {{ document.getElementById("photoResult").innerText = "❌ No se pudo cargar la imagen."; URL.revokeObjectURL(url); }};
+        img.src = url;
+      }});
+    </script>
+    """
+    components.html(html_photo, height=220, scrolling=False)
 
-# ====== BLOQUE: REGISTRO MANUAL / PASTE ======
-st.subheader("Registro manual / Pegar resultado")
-st.caption("Si el lector no puede usar la cámara del iPhone, pega aquí el texto del QR (se copia automáticamente al leer).")
-
-col1, col2 = st.columns([3,1])
-with col1:
-    qr_text = st.text_input("Texto/URL/token leído", value=st.session_state.last_scanned, placeholder="Pega aquí el valor leído...")
-with col2:
-    if st.button("Limpiar"):
-        st.session_state.last_scanned = ""
-        st.rerun()
-
-# Simula recepción por postMessage: si el frontend copia al clipboard, el staff suele pegar aquí.
-# Si quieres automatizar más, podrías implementar una ruta externa con scanner y redirección ?code=...
-if qr_text and qr_text != st.session_state.last_scanned:
-    st.session_state.last_scanned = qr_text
-
-# ====== GUARDAR CHECK-IN ======
-st.subheader("Guardar check-in")
-with st.form("checkin_form"):
-    who = st.text_input("Nombre (si el QR no trae nombre)", "")
-    sede = st.text_input("Sede (si el QR no trae sede)", st.session_state.venue_default)
-    notes = st.text_input("Notas (opcional)", "")
-    submitted = st.form_submit_button("Registrar check-in")
-
-    if submitted:
-        # Parseo muy básico por si viene una URL tipo https://.../?token=XYZ&name=Juan&sede=...
-        from urllib.parse import urlparse, parse_qs
-
-        token = st.session_state.last_scanned.strip()
-        parsed = urlparse(token) if token else None
-        q = parse_qs(parsed.query) if parsed and parsed.query else {}
-
-        name_from_qr = (q.get("name",[None])[0] or who or "").strip()
-        sede_from_qr = (q.get("sede",[None])[0] or sede or "").strip()
-        token_val = (q.get("token",[None])[0] or token or "").strip()
-
-        data = {
-            "timestamp": dt.datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
-            "token": token_val,
-            "nombre": name_from_qr,
-            "sede": sede_from_qr,
-            "notas": notes,
-            "origen": "app",
-            "uuid": str(uuid.uuid4())[:8],
-        }
-
-        sh, ws_att, ws_chk = _open_sheets()
-        if ws_chk:
-            ok = append_checkin(ws_chk, data)
-            if ok:
-                st.success("✅ Check-in registrado.")
-            else:
-                st.warning("No se pudo registrar en Sheets. Revisa credenciales/ID/hojas en `st.secrets`.")
-        else:
-            st.warning("No se pudo conectar a Sheets. Guardado local temporal (muestra abajo).")
-            st.json(data)
-
-st.divider()
-st.caption(
-    "Consejos iOS: en Safari asegúrate de estar en **HTTPS** y haber dado permisos de **Cámara** al sitio. "
-    "Si el visor no se muestra, suele ser por las restricciones de **iframe** en iOS."
-)
-
-# ====== FIN ======
+# ==========================
+# FIN
+# ==========================
