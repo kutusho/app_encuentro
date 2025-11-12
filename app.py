@@ -387,8 +387,8 @@ with tabs[3]:
       }});
     </script>
     """
-    components.html(scanner_html, height=700, scrolling=False, key="scanner_live")
-
+    components.html(scanner_html, height=720, scrolling=False)
+    
     st.divider()
     st.subheader("Modo Staff — Escaneo por foto (compatibilidad iPhone)")
     st.caption("Toma una foto del QR. Decodificamos en el navegador y te enviamos a la verificación.")
@@ -432,7 +432,7 @@ with tabs[3]:
       }});
     </script>
     """
-    components.html(html_photo, height=180, scrolling=False, key="scanner_photo")
+    components.html(html_photo, height=220, scrolling=False)
 
 # ==========================
 # FIN
