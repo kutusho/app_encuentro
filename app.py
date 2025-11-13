@@ -235,9 +235,8 @@ with tabs[2]:
 
 # --- BLOQUE STAFF: CONTROL DE ACCESOS CON ESCÁNER QR ---
 
-if menu == "Staff":
-
-    st.header("Modo Staff — Escaneo con cámara")
+with tabs[3]:
+    st.subheader("Modo Staff — Escaneo con cámara")
 
     st.write(
         "Si en iPhone el lector no inicia, usa el **modo por foto** de abajo. "
@@ -363,8 +362,8 @@ if menu == "Staff":
             "Haz clic en **Iniciar escaneo** para activar la cámara y comenzar a leer códigos QR."
         )
 
-    # Debajo de aquí deja tu lógica existente:
-    # - recibir el postMessage
+    # Debajo de aquí, si quieres, luego añadimos:
+    # - recibir el postMessage en Streamlit
     # - buscar al asistente en la hoja
     # - registrar el check-in en 'checkins'
 
