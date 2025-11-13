@@ -235,17 +235,29 @@ with tabs[2]:
 
 # --- BLOQUE STAFF: CONTROL DE ACCESOS CON ESCÁNER QR ---
 
-elif menu == "Staff":
+if menu == "Staff":
 
-    st.header("Control de accesos – Staff")
+    st.header("Modo Staff — Escaneo con cámara")
 
-    # Mensaje previo para que iOS no bloquee el permiso
+    st.write(
+        "Si en iPhone el lector no inicia, usa el **modo por foto** de abajo. "
+        "En Android/PC el lector continuo funciona bien."
+    )
+
+    # Aviso para que el usuario sepa que se usará la cámara
     st.info(
         "Para registrar los accesos se utilizará la cámara del dispositivo. "
         "Al iniciar el escaneo, tu navegador te pedirá permiso para usar la cámara."
     )
 
-    # Cargar la librería de html5-qrcode de forma global (fuera del visor)
+    # 👉 aquí puedes conservar tu selector de sede por defecto si ya lo tenías
+    # por ejemplo:
+    # sede_defecto = st.selectbox(
+    #     "Sede por defecto si el QR trae solo token (sin URL):",
+    #     ["Holiday Inn Tuxtla (Día 1)", "Chiapa de Corzo (Día 2)", "San Cristóbal (Día 3)"],
+    # )
+
+    # 1) Cargar la librería de html5-qrcode una sola vez
     components.html(
         """
         <script type="text/javascript"
@@ -255,7 +267,7 @@ elif menu == "Staff":
         height=0,
     )
 
-    # Estado del escaneo
+    # 2) Estado del escaneo
     if "scan_activo" not in st.session_state:
         st.session_state["scan_activo"] = False
 
@@ -271,7 +283,7 @@ elif menu == "Staff":
 
     st.markdown("---")
 
-    # Aquí mostraremos el visor solo si el escaneo está activo
+    # 3) Mostrar el visor solo si el escaneo está activo
     if st.session_state["scan_activo"]:
 
         html_qr = """
@@ -283,7 +295,6 @@ elif menu == "Staff":
         </div>
 
         <script>
-          // Función principal de inicio de escaneo
           async function startScanner() {
 
             // Verificar que la librería realmente se haya cargado
@@ -298,28 +309,26 @@ elif menu == "Staff":
             const html5QrCode = new Html5Qrcode("qr-reader");
 
             function onScanSuccess(decodedText, decodedResult) {
-              // Mostrar en el propio HTML
               document.getElementById("qr-reader-results").innerHTML =
                 "Código leído: <strong>" + decodedText + "</strong>";
 
-              // Enviar el resultado al padre (Streamlit)
+              // Mandar el resultado a Streamlit
               window.parent.postMessage(
                 { type: "qr-scan", data: decodedText },
                 "*"
               );
 
-              // Opcional: detener después de un escaneo exitoso
+              // Detener después de un escaneo exitoso (opcional)
               html5QrCode.stop().catch(e => console.log(e));
             }
 
             function onScanFailure(errorMessage) {
-              // Aquí podemos ignorar errores de lectura normales
-              // console.log(errorMessage);
+              // Errores normales de lectura, se pueden ignorar
             }
 
             try {
               await html5QrCode.start(
-                { facingMode: "environment" },  // cámara trasera en móviles
+                { facingMode: "environment" },
                 {
                   fps: 10,
                   qrbox: { width: 250, height: 250 }
@@ -331,8 +340,8 @@ elif menu == "Staff":
               console.error(err);
               document.getElementById("qr-reader").innerHTML =
                 "<p style='color:red;font-size:14px;'>" +
-                "❌ No se pudo iniciar el escaneo. " +
-                "Verifica los permisos de la cámara." +
+                "❌ No se pudo iniciar el escaneo. "
+                + "Verifica los permisos de la cámara." +
                 "</p>";
             }
           }
@@ -342,7 +351,6 @@ elif menu == "Staff":
         </script>
         """
 
-        # Render del visor (sin usar key para evitar errores de IframeMixin)
         components.html(html_qr, height=450)
 
         st.caption(
@@ -355,13 +363,11 @@ elif menu == "Staff":
             "Haz clic en **Iniciar escaneo** para activar la cámara y comenzar a leer códigos QR."
         )
 
-    # ⚠️ IMPORTANTE:
-    # Debajo de este bloque puedes dejar tu lógica existente para:
-    # - Escuchar el postMessage con el resultado del QR
-    # - Buscar al asistente en tu hoja de cálculo
-    # - Registrar el check-in en la hoja 'checkins'
-    #
-    # Esa parte la mantienes tal como ya la tienes funcionando.
+    # Debajo de aquí deja tu lógica existente:
+    # - recibir el postMessage
+    # - buscar al asistente en la hoja
+    # - registrar el check-in en 'checkins'
+
 
 # ==========================
 # FIN
