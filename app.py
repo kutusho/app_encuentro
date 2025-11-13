@@ -273,19 +273,19 @@ with tabs[3]:
 
     if st.session_state["scanner_running"]:
 
-        scanner_html = """
+                scanner_html = """
         <!DOCTYPE html>
         <html>
           <head>
             <meta name="viewport" content="width=device-width, initial-scale=1">
-            <script src="https://unpkg.com/html5-qrcode@2.3.11/html5-qrcode.min.js"></script>
           </head>
 
           <body style="margin:0; padding:0; display:flex; justify-content:center;">
             <div id="reader" style="width: 100%; max-width: 360px; margin-top:10px;"></div>
 
+            <!-- 1) Definimos primero la función que usará la librería -->
             <script>
-              async function start() {
+              function startScanner() {
 
                 if (!window.Html5Qrcode) {
                     document.body.innerHTML =
@@ -299,22 +299,28 @@ with tabs[3]:
                   { facingMode: "environment" },
                   { fps: 10, qrbox: { width: 250, height: 250 } },
 
-                  decodedText => {
+                  function(decodedText, decodedResult) {
+                    // Mandar el resultado al padre (Streamlit)
                     window.parent.postMessage(
-                        {type:"qr-scan", data: decodedText},
-                        "*"
+                      {type:"qr-scan", data: decodedText},
+                      "*"
                     );
                     qr.stop();
                   },
 
-                  error => {}
-                ).catch(err => {
+                  function(errorMessage) {
+                    // Errores normales de lectura, se pueden ignorar
+                  }
+                ).catch(function(err) {
                     document.getElementById("reader").innerHTML =
                       "<p style='color:red;'>❌ No se pudo iniciar la cámara.</p>";
                 });
               }
+            </script>
 
-              start();
+            <!-- 2) Cargamos la librería y SOLO al terminar llamamos a startScanner -->
+            <script src="https://unpkg.com/html5-qrcode@2.3.11/html5-qrcode.min.js"
+                    onload="startScanner()">
             </script>
           </body>
         </html>
