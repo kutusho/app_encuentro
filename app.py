@@ -236,6 +236,11 @@ with tabs[2]:
 # --------------------------
 # STAFF (ESCÁNER QR)
 # --------------------------
+
+# Estado global del escáner (se define una sola vez)
+if "scanner_running" not in st.session_state:
+    st.session_state["scanner_running"] = False
+
 with tabs[3]:
     st.subheader("Modo Staff — Escaneo con cámara")
 
@@ -249,25 +254,24 @@ with tabs[3]:
         "Al iniciar el escaneo, tu navegador te pedirá permiso para usar la cámara."
     )
 
-    # Estado del escaneo
-    if "scan_activo" not in st.session_state:
-        st.session_state["scan_activo"] = False
-
     col1, col2 = st.columns(2)
 
     with col1:
-        if st.button("Iniciar escaneo", key="btn_scan_start"):
-            st.session_state["scan_activo"] = True
+        if st.button("Iniciar escaneo", key="scanner_start_btn"):
+            st.session_state["scanner_running"] = True
             st.rerun()
 
     with col2:
-        if st.button("Detener escaneo", key="btn_scan_stop"):
-            st.session_state["scan_activo"] = False
+        if st.button("Detener escaneo", key="scanner_stop_btn"):
+            st.session_state["scanner_running"] = False
             st.rerun()
 
     st.markdown("---")
 
-    if st.session_state["scan_activo"]:
+    # DEBUG
+    st.write("DEBUG scanner_running =", st.session_state["scanner_running"])
+
+    if st.session_state["scanner_running"]:
 
         scanner_html = """
         <!DOCTYPE html>
@@ -319,8 +323,4 @@ with tabs[3]:
         components.html(scanner_html, height=420, scrolling=False)
 
     else:
-        st.warning("Haz clic en **Iniciar escaneo** para activar la cámara y comenzar a leer códigos QR.")
-
-# ==========================
-# FIN
-# ==========================
+        st.warning("Haz clic en **Iniciar escaneo** para activar la cámara.")
