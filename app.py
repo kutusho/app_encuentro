@@ -237,7 +237,7 @@ with tabs[2]:
 # STAFF (ESCÁNER QR)
 # --------------------------
 
-# Estado global del escáner (se define una sola vez)
+# Crear estado global una sola vez
 if "scanner_running" not in st.session_state:
     st.session_state["scanner_running"] = False
 
@@ -254,6 +254,7 @@ with tabs[3]:
         "Al iniciar el escaneo, tu navegador te pedirá permiso para usar la cámara."
     )
 
+    # Botones de control
     col1, col2 = st.columns(2)
 
     with col1:
@@ -268,12 +269,13 @@ with tabs[3]:
 
     st.markdown("---")
 
-    # DEBUG
+    # Debug temporal (puedes borrarlo cuando ya funcione)
     st.write("DEBUG scanner_running =", st.session_state["scanner_running"])
 
+    # Si el escáner está activo, mostrar visor
     if st.session_state["scanner_running"]:
 
-                scanner_html = """
+        scanner_html = """
         <!DOCTYPE html>
         <html>
           <head>
@@ -283,7 +285,7 @@ with tabs[3]:
           <body style="margin:0; padding:0; display:flex; justify-content:center;">
             <div id="reader" style="width: 100%; max-width: 360px; margin-top:10px;"></div>
 
-            <!-- 1) Definimos primero la función que usará la librería -->
+            <!-- 1) Definimos la función antes de cargar la librería -->
             <script>
               function startScanner() {
 
@@ -300,7 +302,7 @@ with tabs[3]:
                   { fps: 10, qrbox: { width: 250, height: 250 } },
 
                   function(decodedText, decodedResult) {
-                    // Mandar el resultado al padre (Streamlit)
+                    // Enviar a Streamlit
                     window.parent.postMessage(
                       {type:"qr-scan", data: decodedText},
                       "*"
@@ -309,7 +311,7 @@ with tabs[3]:
                   },
 
                   function(errorMessage) {
-                    // Errores normales de lectura, se pueden ignorar
+                    // Errores normales de lectura, ignorar
                   }
                 ).catch(function(err) {
                     document.getElementById("reader").innerHTML =
@@ -318,7 +320,7 @@ with tabs[3]:
               }
             </script>
 
-            <!-- 2) Cargamos la librería y SOLO al terminar llamamos a startScanner -->
+            <!-- 2) Cargar librería y llamar a startScanner solo cuando esté lista -->
             <script src="https://unpkg.com/html5-qrcode@2.3.11/html5-qrcode.min.js"
                     onload="startScanner()">
             </script>
@@ -329,4 +331,5 @@ with tabs[3]:
         components.html(scanner_html, height=420, scrolling=False)
 
     else:
-        st.warning("Haz clic en **Iniciar escaneo** para activar la cámara.")
+        st.warning("Haz clic en **Iniciar escaneo** para activar la cámara y comenzar a leer códigos QR.")
+
