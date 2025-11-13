@@ -233,206 +233,135 @@ with tabs[2]:
         st.success(f"Base URL actualizada a: {st.session_state['base_url']}")
     st.caption("Sugerido: tu dominio de Streamlit Cloud de esta app.")
 
-# --------------------------
-# STAFF (lector + fallback por foto)
-# --------------------------
-with tabs[3]:
-    st.subheader("Modo Staff — Escaneo con cámara")
-    st.caption("Si en iPhone el lector no inicia, usa el **modo por foto** de abajo. En Android/PC el lector continuo funciona bien.")
+# --- BLOQUE STAFF: CONTROL DE ACCESOS CON ESCÁNER QR ---
 
-    sede_staff_live = st.selectbox(
-        "Sede por defecto si el QR trae solo token (sin URL):",
-        ["Holiday Inn Tuxtla (Día 1)", "Ex Convento Santo Domingo (Día 2)", "Museo de los Altos (Día 3)"],
-        index=0,
-        key="sede_staff_live"
+elif menu == "Staff":
+
+    st.header("Control de accesos – Staff")
+
+    # Mensaje previo para que iOS no bloquee el permiso
+    st.info(
+        "Para registrar los accesos se utilizará la cámara del dispositivo. "
+        "Al iniciar el escaneo, tu navegador te pedirá permiso para usar la cámara."
     )
-    sede_val_live = sede_staff_live.replace('"', '\\"')
-    base_url_live = st.session_state.get("base_url", DEFAULT_BASE_URL)
 
-    scanner_html = f"""
-    <div style="display:flex;gap:16px;flex-wrap:wrap;align-items:flex-start">
-      <div style="max-width:380px;">
-        <div id="banner" style="display:none;padding:12px;border-radius:10px;background:#fef3c7;color:#92400e;margin-bottom:10px;font-weight:600">
-          El visor en vivo no está disponible en este dispositivo o navegador. Usa el <b>modo por foto</b> a continuación.
-        </div>
-        <div id="permBanner" style="display:none;padding:12px;border-radius:10px;background:#eef2ff;color:#3730a3;margin-bottom:10px;font-weight:600">
-          Para continuar, otorga permiso de <b>cámara</b> cuando el navegador lo solicite.
-        </div>
-        <div id="reader" style="width:360px;height:360px;border:1px solid #e5e7eb;border-radius:10px;display:flex;align-items:center;justify-content:center;color:#6b7280">
-          <div style="text-align:center">
-            <div id="status" style='margin-bottom:10px;'>Cargando lector…</div>
-            <button id="startBtn" disabled style="padding:12px 16px;border-radius:12px;border:0;background:{PRIMARY_COLOR};color:#fff;font-weight:800;opacity:.6">Iniciar escaneo</button>
-          </div>
-        </div>
-        <div style="margin-top:6px">
-          <button id="stopBtn" disabled style="padding:8px 12px;border-radius:10px;border:1px solid #d1d5db;background:#fff">Detener</button>
-        </div>
-      </div>
-      <div style="flex:1;min-width:260px;">
-        <div id="log" style="font-size:14px;white-space:pre-wrap;color:#374151"></div>
-      </div>
-    </div>
-
-    <script>
-      const baseUrl = "{base_url_live}";
-      const sedeDef = "{sede_val_live}";
-      let html5Qr = null, running = false;
-
-      function addLog(msg){{
-        const el = document.getElementById("log");
-        el.innerText = (el.innerText ? el.innerText + "\\n" : "") + msg;
-      }}
-
-      function buildUrlFromToken(token){{
-        return baseUrl + "/?token=" + encodeURIComponent(token) + "&sede=" + encodeURIComponent(sedeDef);
-      }}
-
-      function onDecode(text){{
-        try {{
-          const t = (text||"").trim();
-          const url = /^https?:\\/\\//i.test(t) ? t : buildUrlFromToken(t);
-          addLog("✅ QR: " + t + "\\n→ " + url);
-          if (running && html5Qr) {{
-            html5Qr.stop().catch(()=>{{}}).finally(()=>{{ running=false; }});
-          }}
-          window.location.href = url;
-        }} catch(e) {{
-          addLog("❌ Error procesando QR: " + e);
-        }}
-      }}
-
-      function show(elId, show=true){{
-        const el = document.getElementById(elId);
-        if (!el) return;
-        el.style.display = show ? "block" : "none";
-      }}
-
-      // Cargar librería y habilitar botón
-      (function loadLib(){{
-        const s = document.createElement('script');
-        s.src = "https://cdnjs.cloudflare.com/ajax/libs/html5-qrcode/2.3.10/html5-qrcode.min.js";
-        s.async = true;
-        s.onload = function(){{
-          const btn = document.getElementById('startBtn');
-          btn.disabled = false; btn.style.opacity = "1";
-          document.getElementById('status').innerText = "Lector listo. Pulsa Iniciar escaneo.";
-          // Si hay API de permisos, sugerimos que dará el prompt al pulsar
-          if (navigator.permissions && navigator.permissions.query) {{
-            navigator.permissions.query({{name: 'camera'}}).then(p => {{
-              if (p.state !== 'granted') show('permBanner', true);
-            }}).catch(()=>{{ show('permBanner', true); }});
-          }} else {{
-            show('permBanner', true);
-          }}
-        }};
-        s.onerror = function(){{
-          document.getElementById('status').innerText = "❌ No se pudo cargar la librería. Recarga la página.";
-        }};
-        document.head.appendChild(s);
-      }})();
-
-      async function startScanner(){{
-        document.getElementById('status').innerText = "Solicitando acceso a cámara…";
-        try {{
-          // Pedimos permiso explícitamente tras el click del usuario (requerido por iOS/Safari)
-          await navigator.mediaDevices.getUserMedia({{ video: true }});
-        }} catch(e) {{
-          show('banner', true);
-          addLog("× Permiso denegado o no disponible: " + (e && e.message ? e.message : e));
-          document.getElementById('status').innerText = "Permiso de cámara no concedido.";
-          return;
-        }}
-
-        // Iniciamos html5-qrcode
-        try {{
-          document.getElementById("reader").innerHTML = "";
-          html5Qr = new Html5Qrcode("reader", false);
-
-          // Elegimos cámara trasera si existe
-          let camId = null;
-          try {{
-            const cams = await Html5Qrcode.getCameras();
-            if (cams && cams.length) {{
-              const back = cams.find(d=>/back|rear|environment/i.test(d.label));
-              camId = (back ? back.id : cams[0].id);
-            }}
-          }} catch(e) {{ addLog("× No se pudieron listar cámaras: " + e); }}
-
-          const constraints = camId ? {{ deviceId: {{ exact: camId }} }} : {{ facingMode: {{ ideal: "environment" }} }};
-          await html5Qr.start(
-            constraints,
-            {{ fps: 12, qrbox: {{ width: 260, height: 260 }}, aspectRatio: 1.0, disableFlip: true }},
-            onDecode,
-            () => {{}}
-          );
-          running = true;
-          document.getElementById("stopBtn").disabled = false;
-          document.getElementById('status').innerText = "Escaneando…";
-        }} catch(e) {{
-          show('banner', true);
-          addLog("× No se pudo iniciar el escaneo: " + (e && e.message ? e.message : e));
-          document.getElementById('status').innerText = "No se pudo abrir la cámara.";
-        }}
-      }}
-
-      document.getElementById("startBtn").addEventListener("click", startScanner);
-      document.getElementById("stopBtn").addEventListener("click", ()=>{{
-        if (running && html5Qr){{
-          html5Qr.stop().catch(()=>{{}}).finally(()=>{{
-            running=false;
-            document.getElementById("stopBtn").disabled = true;
-            document.getElementById('status').innerText = "Escaneo detenido";
-          }});
-        }}
-      }});
-    </script>
-    """
-    components.html(scanner_html, height=720, scrolling=False)
-    
-    st.divider()
-    st.subheader("Modo Staff — Escaneo por foto (compatibilidad iPhone)")
-    st.caption("Toma una foto del QR. Decodificamos en el navegador y te enviamos a la verificación.")
-    sede_staff_photo = st.selectbox(
-        "Sede por defecto si el QR trae solo token (sin URL):",
-        ["Holiday Inn Tuxtla (Día 1)", "Ex Convento Santo Domingo (Día 2)", "Museo de los Altos (Día 3)"],
-        index=0,
-        key="sede_staff_photo"
+    # Cargar la librería de html5-qrcode de forma global (fuera del visor)
+    components.html(
+        """
+        <script type="text/javascript"
+                src="https://unpkg.com/html5-qrcode@2.3.11/html5-qrcode.min.js">
+        </script>
+        """,
+        height=0,
     )
-    sede_val_photo = sede_staff_photo.replace('"', '\\"')
-    base_url_photo = st.session_state.get("base_url", DEFAULT_BASE_URL)
 
-    html_photo = f"""
-    <input id="qrFile" type="file" accept="image/*" capture="environment"
-           style="padding:12px;border:1px solid #e5e7eb;border-radius:12px;width:100%;max-width:420px">
-    <div id="photoResult" style="margin-top:10px;font-family:system-ui,-apple-system,Segoe UI,Roboto,Ubuntu,Cantarell,Noto Sans,Helvetica,Arial;"></div>
-    <canvas id="qrCanvas" style="display:none"></canvas>
-    <script src="https://cdn.jsdelivr.net/npm/jsqr@1.4.0/dist/jsQR.js"></script>
-    <script>
-      const baseUrlP = "{base_url_photo}";
-      const sedeDefP = "{sede_val_photo}";
-      function toUrl(t){{ return /^https?:\\/\\//i.test(t) ? t : baseUrlP + "/?token=" + encodeURIComponent(t) + "&sede=" + encodeURIComponent(sedeDefP); }}
-      document.getElementById("qrFile").addEventListener("change", (ev) => {{
-        const f = ev.target.files && ev.target.files[0]; if (!f) return;
-        const img = new Image(); const url = URL.createObjectURL(f);
-        img.onload = () => {{
-          const c = document.getElementById("qrCanvas"), x = c.getContext("2d");
-          c.width = img.naturalWidth; c.height = img.naturalHeight; x.drawImage(img,0,0);
-          const d = x.getImageData(0,0,c.width,c.height);
-          const code = jsQR(d.data, c.width, c.height, {{ inversionAttempts: "attemptBoth" }});
-          if (code && code.data) {{
-            document.getElementById("photoResult").innerHTML = "✅ QR leído. Abriendo…";
-            window.location.href = toUrl(code.data);
-          }} else {{
-            document.getElementById("photoResult").innerText = "❌ No se detectó un QR claro. Intenta acercar y enfocar.";
-          }}
-          URL.revokeObjectURL(url);
-        }};
-        img.onerror = () => {{ document.getElementById("photoResult").innerText = "❌ No se pudo cargar la imagen."; URL.revokeObjectURL(url); }};
-        img.src = url;
-      }});
-    </script>
-    """
-    components.html(html_photo, height=220, scrolling=False)
+    # Estado del escaneo
+    if "scan_activo" not in st.session_state:
+        st.session_state["scan_activo"] = False
+
+    col1, col2 = st.columns(2)
+
+    with col1:
+        if st.button("Iniciar escaneo"):
+            st.session_state["scan_activo"] = True
+
+    with col2:
+        if st.button("Detener escaneo"):
+            st.session_state["scan_activo"] = False
+
+    st.markdown("---")
+
+    # Aquí mostraremos el visor solo si el escaneo está activo
+    if st.session_state["scan_activo"]:
+
+        html_qr = """
+        <div style="display:flex;flex-direction:column;align-items:center;">
+          <div id="qr-reader"
+               style="width: 320px; max-width: 100%; border:1px solid #ccc;"></div>
+          <div id="qr-reader-results"
+               style="margin-top:10px;font-size:14px;color:#444;"></div>
+        </div>
+
+        <script>
+          // Función principal de inicio de escaneo
+          async function startScanner() {
+
+            // Verificar que la librería realmente se haya cargado
+            if (!window.Html5Qrcode) {
+              document.getElementById("qr-reader").innerHTML =
+                "<p style='color:red;font-size:14px;'>" +
+                "❌ No se pudo cargar la librería. Recarga la página." +
+                "</p>";
+              return;
+            }
+
+            const html5QrCode = new Html5Qrcode("qr-reader");
+
+            function onScanSuccess(decodedText, decodedResult) {
+              // Mostrar en el propio HTML
+              document.getElementById("qr-reader-results").innerHTML =
+                "Código leído: <strong>" + decodedText + "</strong>";
+
+              // Enviar el resultado al padre (Streamlit)
+              window.parent.postMessage(
+                { type: "qr-scan", data: decodedText },
+                "*"
+              );
+
+              // Opcional: detener después de un escaneo exitoso
+              html5QrCode.stop().catch(e => console.log(e));
+            }
+
+            function onScanFailure(errorMessage) {
+              // Aquí podemos ignorar errores de lectura normales
+              // console.log(errorMessage);
+            }
+
+            try {
+              await html5QrCode.start(
+                { facingMode: "environment" },  // cámara trasera en móviles
+                {
+                  fps: 10,
+                  qrbox: { width: 250, height: 250 }
+                },
+                onScanSuccess,
+                onScanFailure
+              );
+            } catch (err) {
+              console.error(err);
+              document.getElementById("qr-reader").innerHTML =
+                "<p style='color:red;font-size:14px;'>" +
+                "❌ No se pudo iniciar el escaneo. " +
+                "Verifica los permisos de la cámara." +
+                "</p>";
+            }
+          }
+
+          // Iniciar cuando se inyecta este HTML
+          startScanner();
+        </script>
+        """
+
+        # Render del visor (sin usar key para evitar errores de IframeMixin)
+        components.html(html_qr, height=450)
+
+        st.caption(
+            "Si ves el mensaje de error en rojo, cierra la página y ábrela "
+            "de nuevo asegurándote de usar HTTPS y el navegador actualizado."
+        )
+
+    else:
+        st.warning(
+            "Haz clic en **Iniciar escaneo** para activar la cámara y comenzar a leer códigos QR."
+        )
+
+    # ⚠️ IMPORTANTE:
+    # Debajo de este bloque puedes dejar tu lógica existente para:
+    # - Escuchar el postMessage con el resultado del QR
+    # - Buscar al asistente en tu hoja de cálculo
+    # - Registrar el check-in en la hoja 'checkins'
+    #
+    # Esa parte la mantienes tal como ya la tienes funcionando.
 
 # ==========================
 # FIN
