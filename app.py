@@ -256,16 +256,17 @@ with tabs[3]:
     col1, col2 = st.columns(2)
 
     with col1:
-        if st.button("Iniciar escaneo"):
+        if st.button("Iniciar escaneo", key="btn_scan_start"):
             st.session_state["scan_activo"] = True
+            st.rerun()
 
     with col2:
-        if st.button("Detener escaneo"):
+        if st.button("Detener escaneo", key="btn_scan_stop"):
             st.session_state["scan_activo"] = False
+            st.rerun()
 
     st.markdown("---")
 
-    # Mostrar visor SOLO cuando el escaneo está activo
     if st.session_state["scan_activo"]:
 
         scanner_html = """
@@ -282,7 +283,6 @@ with tabs[3]:
             <script>
               async function start() {
 
-                // Verificar librería
                 if (!window.Html5Qrcode) {
                     document.body.innerHTML =
                       "<p style='color:red;font-size:16px;'>❌ No se pudo cargar la librería.</p>";
@@ -295,7 +295,6 @@ with tabs[3]:
                   { facingMode: "environment" },
                   { fps: 10, qrbox: { width: 250, height: 250 } },
 
-                  // ✔ Resultado exitoso
                   decodedText => {
                     window.parent.postMessage(
                         {type:"qr-scan", data: decodedText},
@@ -304,7 +303,6 @@ with tabs[3]:
                     qr.stop();
                   },
 
-                  // Errores normales, ignorar
                   error => {}
                 ).catch(err => {
                     document.getElementById("reader").innerHTML =
@@ -318,13 +316,7 @@ with tabs[3]:
         </html>
         """
 
-        components.html(
-            scanner_html,
-            height=420,
-            scrolling=False
-        )
-
-        st.caption("Si ves error en rojo, recarga la página y verifica que tu navegador permita el acceso a la cámara.")
+        components.html(scanner_html, height=420, scrolling=False)
 
     else:
         st.warning("Haz clic en **Iniciar escaneo** para activar la cámara y comenzar a leer códigos QR.")
