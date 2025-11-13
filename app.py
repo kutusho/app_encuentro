@@ -233,8 +233,9 @@ with tabs[2]:
         st.success(f"Base URL actualizada a: {st.session_state['base_url']}")
     st.caption("Sugerido: tu dominio de Streamlit Cloud de esta app.")
 
-# --- BLOQUE STAFF: CONTROL DE ACCESOS CON ESCÁNER QR ---
-
+# --------------------------
+# STAFF (ESCÁNER QR)
+# --------------------------
 with tabs[3]:
     st.subheader("Modo Staff — Escaneo con cámara")
 
@@ -243,30 +244,12 @@ with tabs[3]:
         "En Android/PC el lector continuo funciona bien."
     )
 
-    # Aviso para que el usuario sepa que se usará la cámara
     st.info(
         "Para registrar los accesos se utilizará la cámara del dispositivo. "
         "Al iniciar el escaneo, tu navegador te pedirá permiso para usar la cámara."
     )
 
-    # 👉 aquí puedes conservar tu selector de sede por defecto si ya lo tenías
-    # por ejemplo:
-    # sede_defecto = st.selectbox(
-    #     "Sede por defecto si el QR trae solo token (sin URL):",
-    #     ["Holiday Inn Tuxtla (Día 1)", "Chiapa de Corzo (Día 2)", "San Cristóbal (Día 3)"],
-    # )
-
-    # 1) Cargar la librería de html5-qrcode una sola vez
-    components.html(
-        """
-        <script type="text/javascript"
-                src="https://unpkg.com/html5-qrcode@2.3.11/html5-qrcode.min.js">
-        </script>
-        """,
-        height=0,
-    )
-
-    # 2) Estado del escaneo
+    # Estado del escaneo
     if "scan_activo" not in st.session_state:
         st.session_state["scan_activo"] = False
 
@@ -282,91 +265,69 @@ with tabs[3]:
 
     st.markdown("---")
 
-    # 3) Mostrar el visor solo si el escaneo está activo
+    # Mostrar visor SOLO cuando el escaneo está activo
     if st.session_state["scan_activo"]:
 
-        html_qr = """
-        <div style="display:flex;flex-direction:column;align-items:center;">
-          <div id="qr-reader"
-               style="width: 320px; max-width: 100%; border:1px solid #ccc;"></div>
-          <div id="qr-reader-results"
-               style="margin-top:10px;font-size:14px;color:#444;"></div>
-        </div>
+        scanner_html = """
+        <!DOCTYPE html>
+        <html>
+          <head>
+            <meta name="viewport" content="width=device-width, initial-scale=1">
+            <script src="https://unpkg.com/html5-qrcode@2.3.11/html5-qrcode.min.js"></script>
+          </head>
 
-        <script>
-          async function startScanner() {
+          <body style="margin:0; padding:0; display:flex; justify-content:center;">
+            <div id="reader" style="width: 100%; max-width: 360px; margin-top:10px;"></div>
 
-            // Verificar que la librería realmente se haya cargado
-            if (!window.Html5Qrcode) {
-              document.getElementById("qr-reader").innerHTML =
-                "<p style='color:red;font-size:14px;'>" +
-                "❌ No se pudo cargar la librería. Recarga la página." +
-                "</p>";
-              return;
-            }
+            <script>
+              async function start() {
 
-            const html5QrCode = new Html5Qrcode("qr-reader");
+                // Verificar librería
+                if (!window.Html5Qrcode) {
+                    document.body.innerHTML =
+                      "<p style='color:red;font-size:16px;'>❌ No se pudo cargar la librería.</p>";
+                    return;
+                }
 
-            function onScanSuccess(decodedText, decodedResult) {
-              document.getElementById("qr-reader-results").innerHTML =
-                "Código leído: <strong>" + decodedText + "</strong>";
+                const qr = new Html5Qrcode("reader");
 
-              // Mandar el resultado a Streamlit
-              window.parent.postMessage(
-                { type: "qr-scan", data: decodedText },
-                "*"
-              );
+                qr.start(
+                  { facingMode: "environment" },
+                  { fps: 10, qrbox: { width: 250, height: 250 } },
 
-              // Detener después de un escaneo exitoso (opcional)
-              html5QrCode.stop().catch(e => console.log(e));
-            }
+                  // ✔ Resultado exitoso
+                  decodedText => {
+                    window.parent.postMessage(
+                        {type:"qr-scan", data: decodedText},
+                        "*"
+                    );
+                    qr.stop();
+                  },
 
-            function onScanFailure(errorMessage) {
-              // Errores normales de lectura, se pueden ignorar
-            }
+                  // Errores normales, ignorar
+                  error => {}
+                ).catch(err => {
+                    document.getElementById("reader").innerHTML =
+                      "<p style='color:red;'>❌ No se pudo iniciar la cámara.</p>";
+                });
+              }
 
-            try {
-              await html5QrCode.start(
-                { facingMode: "environment" },
-                {
-                  fps: 10,
-                  qrbox: { width: 250, height: 250 }
-                },
-                onScanSuccess,
-                onScanFailure
-              );
-            } catch (err) {
-              console.error(err);
-              document.getElementById("qr-reader").innerHTML =
-                "<p style='color:red;font-size:14px;'>" +
-                "❌ No se pudo iniciar el escaneo. "
-                + "Verifica los permisos de la cámara." +
-                "</p>";
-            }
-          }
-
-          // Iniciar cuando se inyecta este HTML
-          startScanner();
-        </script>
+              start();
+            </script>
+          </body>
+        </html>
         """
 
-        components.html(html_qr, height=450)
-
-        st.caption(
-            "Si ves el mensaje de error en rojo, cierra la página y ábrela "
-            "de nuevo asegurándote de usar HTTPS y el navegador actualizado."
+        components.html(
+            scanner_html,
+            height=420,
+            scrolling=False
         )
+
+        st.caption("Si ves error en rojo, recarga la página y verifica que tu navegador permita el acceso a la cámara.")
 
     else:
-        st.warning(
-            "Haz clic en **Iniciar escaneo** para activar la cámara y comenzar a leer códigos QR."
-        )
-
-    # Debajo de aquí, si quieres, luego añadimos:
-    # - recibir el postMessage en Streamlit
-    # - buscar al asistente en la hoja
-    # - registrar el check-in en 'checkins'
-
+        st.warning("Haz clic en **Iniciar escaneo** para activar la cámara y comenzar a leer códigos QR.")
 
 # ==========================
 # FIN
